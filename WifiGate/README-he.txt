@@ -4,7 +4,7 @@
 מה זה
 -----
 חבילה קטנה של PowerShell ו-.NET (כבר קיימים ב-Windows). בלי ענן, בלי תשלום, בלי אינטרנט.
-היא חוסמת את מתאם ה-Wi-Fi Intel(R) Wi-Fi 6 AX201 160MHz בלבד (מזהה {E370A64A-8594-4758-ACE3-0DF2C7B75A28}).
+היא חוסמת את מתאם ה-Wi-Fi בלבד. המתאם מזוהה אוטומטית בהתקנה, ואם יש כמה מתאמים תתבקשו לבחור.
 המתאם מזוהה לפי ה-GUID ולא לפי השם, ולכן התווים הנסתרים בשם הממשק אינם משפיעים.
 Ethernet ושאר המתאמים אינם נוגעים בהם.
 
@@ -63,7 +63,7 @@ WifiGate\
 אם גם זה לא עובד: PowerShell כמנהל והדביקו:
   Unregister-ScheduledTask -TaskName WifiGate-Boot,WifiGate-Tick -Confirm:$false
   Get-NetFirewallRule -Group WifiGate | Remove-NetFirewallRule
-  Get-NetAdapter | Where-Object InterfaceGuid -eq '{E370A64A-8594-4758-ACE3-0DF2C7B75A28}' | Enable-NetAdapter -Confirm:$false
+  Get-NetAdapter | Where-Object { $_.InterfaceType -eq 71 } | Enable-NetAdapter -Confirm:$false
 
 מה החסימה מונעת
 ---------------

@@ -3,7 +3,7 @@
 # SELF-TEST of lock/unlock/recovery (auto-reverting) -> only then register tasks and lock.
 
 $ErrorActionPreference = 'Stop'
-$WifiGuid = '{E370A64A-8594-4758-ACE3-0DF2C7B75A28}'   # Intel(R) Wi-Fi 6 AX201 160MHz
+$WifiGuid = $null   # detected automatically in step 1 (works on any PC)
 
 $srcDir = Join-Path $PSScriptRoot 'src'
 . (Join-Path $srcDir 'Common.ps1')
@@ -37,12 +37,47 @@ if ((Test-Path $script:StateFile) -or (Test-Path $script:ProgDir)) {
     Stop-Install "WifiGate כבר מותקן (או שהתקנה קודמת לא הושלמה).`n`nהשתמשו בקיצור 'WifiGate - שחזור' בשולחן העבודה, ובחרו הסרה, ואז הריצו את ההתקנה שוב."
 }
 
-# ---- 1. find the adapter by GUID ----
-$wifi = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceGuid -eq $WifiGuid } | Select-Object -First 1
-if (-not $wifi) {
-    $all = (Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object { "$($_.InterfaceDescription)  $($_.InterfaceGuid)" }) -join "`n"
-    Stop-Install "לא נמצא מתאם עם המזהה $WifiGuid.`nלא בוצע שום שינוי.`n`nמתאמים שנמצאו:`n$all"
+# ---- 1. detect the Wi-Fi adapter automatically (by type, then remembered by GUID) ----
+function Get-WifiCandidates {
+    $list = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+        $_.InterfaceDescription -notmatch 'Virtual|Direct|Bluetooth|Hyper-V|VPN|TAP|Loopback' -and
+        ( $_.InterfaceType -eq 71 -or
+          [string]$_.PhysicalMediaType -match '802\.11|Wireless' -or
+          $_.InterfaceDescription -match 'Wi-?Fi|Wireless|WLAN|802\.11' )
+    })
+    return $list
 }
+
+$cands = @(Get-WifiCandidates)
+if ($cands.Count -eq 0) {
+    $all = (Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object { "$($_.InterfaceDescription)  $($_.InterfaceGuid)" }) -join "`n"
+    Stop-Install "לא נמצא מתאם Wi-Fi במחשב זה.`nלא בוצע שום שינוי.`n`nמתאמים שנמצאו:`n$all"
+}
+
+if ($cands.Count -eq 1) {
+    $wifi = $cands[0]
+} else {
+    $f = New-Object System.Windows.Forms.Form
+    $f.Text = 'WifiGate - בחירת מתאם'; $f.RightToLeft = 'Yes'; $f.RightToLeftLayout = $true
+    $f.StartPosition = 'CenterScreen'; $f.FormBorderStyle = 'FixedDialog'
+    $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.TopMost = $true
+    $f.ClientSize = New-Object System.Drawing.Size(480, 230)
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text = 'נמצאו כמה מתאמי Wi-Fi. בחרו את המתאם לחסימה:'; $l.SetBounds(15, 12, 450, 22)
+    $lb = New-Object System.Windows.Forms.ListBox
+    $lb.SetBounds(15, 40, 450, 130)
+    foreach ($c in $cands) { [void]$lb.Items.Add("$($c.InterfaceDescription)  [$($c.Status)]") }
+    $lb.SelectedIndex = 0
+    $ok = New-Object System.Windows.Forms.Button
+    $ok.Text = 'אישור'; $ok.DialogResult = 'OK'; $ok.SetBounds(15, 185, 150, 30)
+    $cn = New-Object System.Windows.Forms.Button
+    $cn.Text = 'ביטול'; $cn.DialogResult = 'Cancel'; $cn.SetBounds(180, 185, 150, 30)
+    $f.Controls.AddRange(@($l, $lb, $ok, $cn)); $f.AcceptButton = $ok; $f.CancelButton = $cn
+    $res = $f.ShowDialog(); $idx = $lb.SelectedIndex; $f.Dispose()
+    if ([string]$res -ne 'OK' -or $idx -lt 0) { Stop-Install 'ההתקנה בוטלה. לא בוצע שום שינוי.' }
+    $wifi = $cands[$idx]
+}
+$WifiGuid = [string]$wifi.InterfaceGuid
 
 # ---- 2. planned changes + consent ----
 $plan = @"
