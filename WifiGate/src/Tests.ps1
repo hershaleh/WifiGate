@@ -31,7 +31,7 @@ function Test-General {
     $st = Get-State
     if (-not $st) { Add-Res 'FAIL' 'קובץ המצב חסר או פגום (ייחשב כנעול).' } else { Add-Res 'INFO' "מצב: $($st.Mode)" }
     if ($st -and $st.Mode -eq 'unlocked') {
-        $n = @(Get-NetFirewallRule -Group $script:RuleGroup -ErrorAction SilentlyContinue).Count
+        $n = @(Get-BlockRules).Count
         if ($n -eq 0) { Add-Res 'PASS' 'מצב פתוח: אין כללי חסימה (כמצופה).' } else { Add-Res 'FAIL' "מצב פתוח אבל נמצאו $n כללי חסימה." }
     } else {
         if (Test-BlockRulesValid $a.Name) { Add-Res 'PASS' 'שני כללי החסימה (נכנס ויוצא) קיימים, פעילים ומוגבלים למתאם ה-Wi-Fi בלבד.' }
@@ -46,7 +46,7 @@ function Test-General {
     }
     # Ethernet / other adapters untouched
     $wifiAlias = $a.Name
-    $other = @(Get-NetFirewallRule -Group $script:RuleGroup -ErrorAction SilentlyContinue | Get-NetFirewallInterfaceFilter |
+    $other = @(Get-BlockRules | Get-NetFirewallInterfaceFilter |
         ForEach-Object { @($_.InterfaceAlias) } | Where-Object { $_ -ne $wifiAlias })
     if ($other.Count -eq 0) { Add-Res 'PASS' 'אף כלל של WifiGate אינו מתייחס למתאם אחר.' } else { Add-Res 'FAIL' 'כלל של WifiGate מתייחס למתאם נוסף.' }
     $snap = @(Read-Json $script:SnapshotFile)
@@ -86,7 +86,7 @@ function Test-UnlockFlow {
     $sw.Stop()
     if (-not $r.Ok) { Add-Res 'FAIL' "הפתיחה נכשלה: $($r.Message)"; return }
     Add-Res 'PASS' ("פעולה אחת (סיסמה בלבד) ביצעה אימות, הסרת כללים והפעלת מתאם תוך {0:N1} שניות." -f $sw.Elapsed.TotalSeconds)
-    if (@(Get-NetFirewallRule -Group $script:RuleGroup -ErrorAction SilentlyContinue).Count -eq 0) { Add-Res 'PASS' 'כללי החסימה הוסרו.' } else { Add-Res 'FAIL' 'כללי החסימה עדיין קיימים.' }
+    if (@(Get-BlockRules).Count -eq 0) { Add-Res 'PASS' 'כללי החסימה הוסרו.' } else { Add-Res 'FAIL' 'כללי החסימה עדיין קיימים.' }
     if (Wait-AdapterUp 25) { Add-Res 'PASS' 'המתאם פעיל ומחובר.' } else { Add-Res 'INFO' 'המתאם הופעל אך עדיין לא מחובר לרשת (ייתכן שאין רשת מוכרת בטווח).' }
     $st = Get-State
     if ($st -and $st.Mode -eq 'unlocked') { Add-Res 'PASS' 'המצב נשמר כפתוח.' } else { Add-Res 'FAIL' 'המצב לא נשמר.' }
@@ -123,7 +123,7 @@ function Test-Traffic {
         if (-not $ip) { Add-Res 'SKIP' 'ה-Wi-Fi לא התחבר לרשת בטווח הזמן (אין רשת מוכרת?).'; return }
         $blocked = -not ((Test-TcpOnce '1.1.1.1' 443 6000) -or (Test-TcpOnce '8.8.8.8' 443 6000))
         # positive control: remove the rules for a few seconds and verify the Wi-Fi really has internet
-        Get-NetFirewallRule -Group $script:RuleGroup -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+        Get-BlockRules | Remove-NetFirewallRule
         Start-Sleep -Seconds 2
         $control = (Test-TcpOnce '1.1.1.1' 443 8000) -or (Test-TcpOnce '8.8.8.8' 443 8000)
         Set-WifiBlock

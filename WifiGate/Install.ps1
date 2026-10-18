@@ -161,19 +161,20 @@ $fail = $null
 try {
     $name = (Get-WifiAdapter).Name
     Set-WifiBlock                                                       # trial lock (state stays 'unlocked')
-    if (-not (Test-BlockRulesValid $name)) { throw 'כללי חומת האש לא נוצרו כראוי.' }
+    $prob = Get-BlockRulesProblem $name
+    if ($prob) { throw "כללי חומת האש לא נוצרו כראוי: $prob" }
     if ((Get-WifiAdapter).Status -ne 'Disabled') { throw 'המתאם לא כובה.' }
     if (Test-SecretRecord 'wrong-password-xyz' (Read-Json $script:AuthFile).Password) { throw 'אימות סיסמה שגוי התקבל.' }
 
     $r = Invoke-Unlock $pw                                              # exercise the real unlock path
     if (-not $r.Ok) { throw 'פתיחה בסיסמה נכשלה בבדיקה.' }
-    if (@(Get-NetFirewallRule -Group $script:RuleGroup -ErrorAction SilentlyContinue).Count -ne 0) { throw 'הכללים לא הוסרו בפתיחה.' }
+    if (@(Get-BlockRules).Count -ne 0) { throw 'הכללים לא הוסרו בפתיחה.' }
     if ((Get-WifiAdapter).Status -eq 'Disabled') { throw 'המתאם לא הופעל בפתיחה.' }
 
     Set-WifiBlock                                                       # lock again, then recover with the code
     $r = Invoke-Recovery $code
     if (-not $r.Ok) { throw 'שחזור בקוד נכשל בבדיקה.' }
-    if (@(Get-NetFirewallRule -Group $script:RuleGroup -ErrorAction SilentlyContinue).Count -ne 0) { throw 'השחזור לא הסיר את הכללים.' }
+    if (@(Get-BlockRules).Count -ne 0) { throw 'השחזור לא הסיר את הכללים.' }
     if ((Get-WifiAdapter).Status -eq 'Disabled') { throw 'השחזור לא הפעיל את המתאם.' }
 } catch { $fail = $_.Exception.Message }
 finally { Unregister-ScheduledTask -TaskName 'WifiGate-TrialFailsafe' -Confirm:$false -ErrorAction SilentlyContinue }

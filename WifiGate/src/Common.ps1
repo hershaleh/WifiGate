@@ -79,18 +79,28 @@ function Wait-AdapterUp([int]$Seconds = 20, [scriptblock]$Pump = $null) {
 
 # ---------- firewall block ----------
 
-function Test-BlockRulesValid([string]$Alias) {
-    $rules = @(Get-NetFirewallRule -Group $script:RuleGroup -ErrorAction SilentlyContinue)
-    if ($rules.Count -ne 2) { return $false }
+function Get-BlockRules {
+    return @(Get-NetFirewallRule -DisplayName 'WifiGate block*' -ErrorAction SilentlyContinue)
+}
+
+# Returns $null when the block rules are correct, otherwise a text describing what is wrong.
+function Get-BlockRulesProblem([string]$Alias) {
+    $rules = @(Get-BlockRules)
+    if ($rules.Count -ne 2) { return "נמצאו $($rules.Count) כללים, ציפיתי ל-2" }
     foreach ($r in $rules) {
-        if ($r.Enabled -ne 'True' -or $r.Action -ne 'Block') { return $false }
+        if ([string]$r.Enabled -ne 'True') { return "הכלל '$($r.DisplayName)' לא פעיל (Enabled=$($r.Enabled))" }
+        if ([string]$r.Action -ne 'Block') { return "הכלל '$($r.DisplayName)' אינו חוסם (Action=$($r.Action))" }
         $f = $r | Get-NetFirewallInterfaceFilter
-        if (@($f.InterfaceAlias) -notcontains $Alias) { return $false }
-        if (@($f.InterfaceAlias).Count -ne 1) { return $false }
+        if (-not $f) { return "לכלל '$($r.DisplayName)' אין סינון מתאם" }
+        $al = @($f.InterfaceAlias | ForEach-Object { [string]$_ })
+        if ($al -notcontains $Alias) { return "סינון המתאם בכלל הוא [$($al -join ',')] ולא '$Alias'" }
     }
     $dirs = (@($rules | ForEach-Object { [string]$_.Direction }) | Sort-Object) -join ','
-    return ($dirs -eq 'Inbound,Outbound')
+    if ($dirs -ne 'Inbound,Outbound') { return "כיווני הכללים: $dirs" }
+    return $null
 }
+
+function Test-BlockRulesValid([string]$Alias) { return (-not (Get-BlockRulesProblem $Alias)) }
 
 # Idempotent: makes sure the block is in place. Changes nothing if it already is.
 function Set-WifiBlock {
@@ -98,7 +108,7 @@ function Set-WifiBlock {
     $alias = $a.Name
     Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True
     if (-not (Test-BlockRulesValid $alias)) {
-        Get-NetFirewallRule -Group $script:RuleGroup -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+        Get-BlockRules | Remove-NetFirewallRule
         foreach ($d in 'Outbound', 'Inbound') {
             New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup `
                 -Description 'WifiGate: blocks all traffic on the Wi-Fi interface until unlocked.' `
@@ -113,7 +123,7 @@ function Set-WifiBlock {
 }
 
 function Clear-WifiBlock {
-    Get-NetFirewallRule -Group $script:RuleGroup -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    Get-BlockRules | Remove-NetFirewallRule
     $a = Get-WifiAdapter
     if ($a.Status -eq 'Disabled') { Enable-NetAdapter -Name $a.Name -Confirm:$false }
 }
@@ -224,7 +234,7 @@ function Invoke-Uninstall {
         Unregister-ScheduledTask -TaskName $n -Confirm:$false -ErrorAction SilentlyContinue
     }
     try { Clear-WifiBlock } catch {
-        Get-NetFirewallRule -Group $script:RuleGroup -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+        Get-BlockRules | Remove-NetFirewallRule
     }
     $desk = [Environment]::GetFolderPath('Desktop')
     Get-ChildItem $desk -Filter 'WifiGate*.lnk' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
