@@ -18,19 +18,23 @@ if (-not (Test-IsAdmin)) {
 function Stop-Install([string]$Text) { [void](Show-Message $Text 'WifiGate - התקנה' 'OK' 'Warning'); exit 1 }
 
 function New-GateShortcut([string]$Name, [string]$ScriptName, [string]$Icon, [string]$Hotkey = '') {
+    # WScript.Shell is ANSI-only: it cannot save to a path containing Hebrew (user profile / shortcut name).
+    # So: build the .lnk at an ASCII-only path, then move it to the Desktop with .NET (Unicode-safe).
     $desk = [Environment]::GetFolderPath('Desktop')
-    $lnk = Join-Path $desk ($Name + '.lnk')
+    $final = Join-Path $desk ($Name + '.lnk')
+    $tmp = Join-Path $script:ProgDir ('tmp-' + [guid]::NewGuid().ToString('N') + '.lnk')
     $sh = New-Object -ComObject WScript.Shell
-    $s = $sh.CreateShortcut($lnk)
+    $s = $sh.CreateShortcut($tmp)
     $s.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $s.Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + (Join-Path $script:ProgDir $ScriptName) + '"'
     $s.WorkingDirectory = $script:ProgDir
     $s.IconLocation = $Icon
     if ($Hotkey) { $s.Hotkey = $Hotkey }
     $s.Save()
-    $b = [IO.File]::ReadAllBytes($lnk)          # "Run as administrator" flag
-    $b[0x15] = $b[0x15] -bor 0x20
-    [IO.File]::WriteAllBytes($lnk, $b)
+    $bytes = [IO.File]::ReadAllBytes($tmp)       # "Run as administrator" flag
+    $bytes[0x15] = $bytes[0x15] -bor 0x20
+    [IO.File]::WriteAllBytes($final, $bytes)
+    [IO.File]::Delete($tmp)
 }
 
 try {
@@ -38,9 +42,7 @@ try {
 if ((Test-Path $script:StateFile) -or (Test-Path $script:ProgDir)) {
     $complete = [bool](Get-ScheduledTask -TaskName 'WifiGate-Boot' -ErrorAction SilentlyContinue)
     if ($complete) {
-        Stop-Install "WifiGate כבר מותקן.`
-`
-השתמשו בקיצור 'WifiGate - שחזור' בשולחן העבודה, ובחרו הסרה, ואז הריצו את ההתקנה שוב."
+        Stop-Install "WifiGate כבר מותקן.`n`nהשתמשו בקיצור 'WifiGate - שחזור' בשולחן העבודה, ובחרו הסרה, ואז הריצו את ההתקנה שוב."
     }
     Invoke-Uninstall    # leftovers of an incomplete/failed earlier install: clean them silently
 }
