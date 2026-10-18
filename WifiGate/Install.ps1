@@ -17,7 +17,7 @@ if (-not (Test-IsAdmin)) {
 
 function Stop-Install([string]$Text) { [void](Show-Message $Text 'WifiGate - התקנה' 'OK' 'Warning'); exit 1 }
 
-function New-GateShortcut([string]$Name, [string]$ScriptName, [string]$Icon) {
+function New-GateShortcut([string]$Name, [string]$ScriptName, [string]$Icon, [string]$Hotkey = '') {
     $desk = [Environment]::GetFolderPath('Desktop')
     $lnk = Join-Path $desk ($Name + '.lnk')
     $sh = New-Object -ComObject WScript.Shell
@@ -26,15 +26,23 @@ function New-GateShortcut([string]$Name, [string]$ScriptName, [string]$Icon) {
     $s.Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + (Join-Path $script:ProgDir $ScriptName) + '"'
     $s.WorkingDirectory = $script:ProgDir
     $s.IconLocation = $Icon
+    if ($Hotkey) { $s.Hotkey = $Hotkey }
     $s.Save()
     $b = [IO.File]::ReadAllBytes($lnk)          # "Run as administrator" flag
     $b[0x15] = $b[0x15] -bor 0x20
     [IO.File]::WriteAllBytes($lnk, $b)
 }
 
+try {
 # ---- 0. existing installation? ----
 if ((Test-Path $script:StateFile) -or (Test-Path $script:ProgDir)) {
-    Stop-Install "WifiGate כבר מותקן (או שהתקנה קודמת לא הושלמה).`n`nהשתמשו בקיצור 'WifiGate - שחזור' בשולחן העבודה, ובחרו הסרה, ואז הריצו את ההתקנה שוב."
+    $complete = [bool](Get-ScheduledTask -TaskName 'WifiGate-Boot' -ErrorAction SilentlyContinue)
+    if ($complete) {
+        Stop-Install "WifiGate כבר מותקן.`
+`
+השתמשו בקיצור 'WifiGate - שחזור' בשולחן העבודה, ובחרו הסרה, ואז הריצו את ההתקנה שוב."
+    }
+    Invoke-Uninstall    # leftovers of an incomplete/failed earlier install: clean them silently
 }
 
 # ---- 1. detect the Wi-Fi adapter automatically (by type, then remembered by GUID) ----
@@ -91,7 +99,7 @@ $plan = @"
 3. שני כללי חומת אש (Windows Firewall) החוסמים תעבורה נכנסת ויוצאת במתאם ה-Wi-Fi בלבד. אם חומת האש כבויה - היא תופעל.
 4. כיבוי מתאם ה-Wi-Fi בזמן חסימה.
 5. שתי משימות מתוזמנות (חשבון SYSTEM): נעילה באתחול ובהתחברות, ותיקון החסימה כל דקה.
-6. שלושה קיצורי דרך בשולחן העבודה: פתיחה, שחזור, בדיקות.
+6. ארבעה קיצורי דרך בשולחן העבודה: פתיחה (Ctrl+Alt+P), נעילה (Ctrl+Alt+X), שחזור, בדיקות.
 
 לא ישונה: Ethernet ושאר מתאמי הרשת, וחשבון המשתמש שלכם.
 
@@ -134,7 +142,8 @@ Set-State 'unlocked'
 Write-Json $script:SnapshotFile (@(Get-NetAdapter | Where-Object { $_.InterfaceGuid -ne $WifiGuid } |
     ForEach-Object { [pscustomobject]@{ Name = $_.Name; Guid = $_.InterfaceGuid; Status = [string]$_.Status } }))
 
-New-GateShortcut 'WifiGate - פתיחת Wi-Fi' 'Unlock-UI.ps1' 'shell32.dll,44'
+New-GateShortcut 'WifiGate - פתיחת Wi-Fi' 'Unlock-UI.ps1' 'shell32.dll,44' 'CTRL+ALT+P'
+New-GateShortcut 'WifiGate - נעילת Wi-Fi' 'Lock.ps1'      'shell32.dll,47' 'CTRL+ALT+X'
 New-GateShortcut 'WifiGate - שחזור'       'Recovery.ps1'  'shell32.dll,238'
 New-GateShortcut 'WifiGate - בדיקות'      'Tests.ps1'     'shell32.dll,23'
 
@@ -182,3 +191,9 @@ if ($go -ne 'Yes') {
 Register-WifiGateTasks
 Invoke-Lock
 [void](Show-Message "החסימה פעילה.`n`nלפתיחה: קיצור 'WifiGate - פתיחת Wi-Fi' בשולחן העבודה.`nמומלץ להריץ את 'WifiGate - בדיקות' ולפעול לפי ה-README." 'WifiGate' 'OK' 'Information')
+} catch {
+    $msg = $_.Exception.Message + "`n`n" + $_.InvocationInfo.PositionMessage
+    try { Invoke-Uninstall } catch { }
+    try { $msg | Set-Content -Path (Join-Path ([Environment]::GetFolderPath('Desktop')) 'WifiGate-error.txt') -Encoding UTF8 } catch { }
+    Stop-Install "ההתקנה נכשלה בשגיאה:`n`n$msg`n`nהכל הוחזר לקדמותו וה-Wi-Fi פתוח. השגיאה נשמרה גם בקובץ WifiGate-error.txt בשולחן העבודה."
+}
