@@ -47,7 +47,7 @@ function Test-General {
     # Ethernet / other adapters untouched
     $wifiAlias = $a.Name
     $other = @(Get-BlockRules | Get-NetFirewallInterfaceFilter |
-        ForEach-Object { @($_.InterfaceAlias) } | Where-Object { $_ -ne $wifiAlias })
+        ForEach-Object { @($_.InterfaceAlias) } | Where-Object { (Get-AdapterFilterIds $wifiAlias) -notcontains [string]$_ })
     if ($other.Count -eq 0) { Add-Res 'PASS' 'אף כלל של WifiGate אינו מתייחס למתאם אחר.' } else { Add-Res 'FAIL' 'כלל של WifiGate מתייחס למתאם נוסף.' }
     $snap = @(Read-Json $script:SnapshotFile)
     foreach ($s in $snap) {

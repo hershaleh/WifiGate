@@ -83,9 +83,21 @@ function Get-BlockRules {
     return @(Get-NetFirewallRule -DisplayName 'WifiGate block*' -ErrorAction SilentlyContinue)
 }
 
+# Windows Firewall may store the interface filter either as the alias (name) or as the adapter's LUID number.
+function Get-AdapterFilterIds([string]$Alias) {
+    $ids = @($Alias)
+    try {
+        $a = Get-WifiAdapter
+        $ids += [string]$a.Name
+        $ids += [string]$a.InterfaceLuid
+    } catch { }
+    return @($ids)
+}
+
 # Returns $null when the block rules are correct, otherwise a text describing what is wrong.
 function Get-BlockRulesProblem([string]$Alias) {
     $rules = @(Get-BlockRules)
+    $ids = Get-AdapterFilterIds $Alias
     if ($rules.Count -ne 2) { return "נמצאו $($rules.Count) כללים, ציפיתי ל-2" }
     foreach ($r in $rules) {
         if ([string]$r.Enabled -ne 'True') { return "הכלל '$($r.DisplayName)' לא פעיל (Enabled=$($r.Enabled))" }
@@ -93,7 +105,7 @@ function Get-BlockRulesProblem([string]$Alias) {
         $f = $r | Get-NetFirewallInterfaceFilter
         if (-not $f) { return "לכלל '$($r.DisplayName)' אין סינון מתאם" }
         $al = @($f.InterfaceAlias | ForEach-Object { [string]$_ })
-        if ($al -notcontains $Alias) { return "סינון המתאם בכלל הוא [$($al -join ',')] ולא '$Alias'" }
+        if (@($al | Where-Object { $ids -contains $_ }).Count -eq 0) { return "סינון המתאם בכלל הוא [$($al -join ',')] ולא '$Alias'" }
     }
     $dirs = (@($rules | ForEach-Object { [string]$_.Direction }) | Sort-Object) -join ','
     if ($dirs -ne 'Inbound,Outbound') { return "כיווני הכללים: $dirs" }
