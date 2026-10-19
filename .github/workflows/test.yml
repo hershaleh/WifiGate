@@ -13,26 +13,32 @@ jobs:
       - name: Exercise block rules (Windows PowerShell 5.1)
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          $PSVersionTable.PSVersion | Out-String
-          . .\WifiGate\src\Common.ps1
-          New-Item -ItemType Directory -Force $script:DataDir | Out-Null
-          $nics = @(Get-NetAdapter | Where-Object Status -eq 'Up')
-          $nics | Format-Table Name, InterfaceDescription, InterfaceGuid, InterfaceIndex | Out-String
-          $a = $nics[0]
-          "--- adapter properties with Luid in name ---"
-          $a.PSObject.Properties | Where-Object { $_.Name -match 'Luid' } | ForEach-Object { "$($_.Name) = $($_.Value)" }
-          '{"AdapterGuid":"' + $a.InterfaceGuid + '"}' | Set-Content $script:ConfigFile
-          foreach ($d in 'Outbound','Inbound') {
-            New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup -Direction $d -Action Block `
-              -InterfaceAlias $a.Name -Profile Any -Enabled True | Out-Null
-          }
-          "--- rule filters ---"
-          Get-BlockRules | ForEach-Object { $f = $_ | Get-NetFirewallInterfaceFilter; "$($_.DisplayName): Enabled=[$($_.Enabled)] Action=[$($_.Action)] Dir=[$($_.Direction)] Alias=[$(@($f.InterfaceAlias) -join ',')] type=$(@($f.InterfaceAlias)[0].GetType().Name)" }
-          "--- ids ---"
-          (Get-AdapterFilterIds $a.Name) -join ' | '
-          "--- problem ---"
-          $p = Get-BlockRulesProblem $a.Name
-          if ($p) { "PROBLEM: $p"; $global:bad = $true } else { "OK: rules valid" }
-          Get-BlockRules | Remove-NetFirewallRule
-          if ($global:bad) { exit 1 }
+          $out = New-Object System.Collections.ArrayList
+          function L($t) { [void]$out.Add([string]$t) }
+          $bad = $false
+          try {
+            $ErrorActionPreference = 'Stop'
+            L ("PS " + $PSVersionTable.PSVersion)
+            . .\WifiGate\src\Common.ps1
+            New-Item -ItemType Directory -Force $script:DataDir | Out-Null
+            $nics = @(Get-NetAdapter | Where-Object Status -eq 'Up')
+            foreach ($n in $nics) { L ("NIC: $($n.Name) | $($n.InterfaceDescription) | $($n.InterfaceGuid) | idx $($n.InterfaceIndex)") }
+            $a = $nics[0]
+            foreach ($pr in ($a.PSObject.Properties | Where-Object { $_.Name -match 'Luid' })) { L ("PROP $($pr.Name) = $($pr.Value)") }
+            ('{"AdapterGuid":"' + $a.InterfaceGuid + '"}') | Set-Content $script:ConfigFile
+            foreach ($d in 'Outbound','Inbound') {
+              New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup -Direction $d -Action Block -InterfaceAlias $a.Name -Profile Any -Enabled True | Out-Null
+            }
+            foreach ($r in (Get-BlockRules)) {
+              $f = $r | Get-NetFirewallInterfaceFilter
+              $v = @($f.InterfaceAlias)
+              L ("RULE $($r.DisplayName): Enabled=[$($r.Enabled)] Action=[$($r.Action)] Dir=[$($r.Direction)] Alias=[$($v -join ',')] type=$($v[0].GetType().Name)")
+            }
+            L ("IDS: " + ((Get-AdapterFilterIds $a.Name) -join ' | '))
+            $p = Get-BlockRulesProblem $a.Name
+            if ($p) { L "PROBLEM: $p"; $bad = $true } else { L "OK: rules valid" }
+            Get-BlockRules | Remove-NetFirewallRule
+          } catch { L ("EXCEPTION: " + $_.Exception.Message + " @ " + $_.InvocationInfo.PositionMessage); $bad = $true }
+          $text = ($out -join "`n") -replace "`r", '' -replace "`n", '%0A'
+          Write-Host ("::notice title=RESULT::" + $text)
+          if ($bad) { exit 1 }
