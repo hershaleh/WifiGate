@@ -1,0 +1,38 @@
+name: Test firewall logic
+
+on:
+  workflow_dispatch:
+  push:
+    paths: ['WifiGate/**', '.github/workflows/test.yml']
+
+jobs:
+  firewall:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise block rules (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSVersionTable.PSVersion | Out-String
+          . .\WifiGate\src\Common.ps1
+          New-Item -ItemType Directory -Force $script:DataDir | Out-Null
+          $nics = @(Get-NetAdapter | Where-Object Status -eq 'Up')
+          $nics | Format-Table Name, InterfaceDescription, InterfaceGuid, InterfaceIndex | Out-String
+          $a = $nics[0]
+          "--- adapter properties with Luid in name ---"
+          $a.PSObject.Properties | Where-Object { $_.Name -match 'Luid' } | ForEach-Object { "$($_.Name) = $($_.Value)" }
+          '{"AdapterGuid":"' + $a.InterfaceGuid + '"}' | Set-Content $script:ConfigFile
+          foreach ($d in 'Outbound','Inbound') {
+            New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup -Direction $d -Action Block `
+              -InterfaceAlias $a.Name -Profile Any -Enabled True | Out-Null
+          }
+          "--- rule filters ---"
+          Get-BlockRules | ForEach-Object { $f = $_ | Get-NetFirewallInterfaceFilter; "$($_.DisplayName): Enabled=[$($_.Enabled)] Action=[$($_.Action)] Dir=[$($_.Direction)] Alias=[$(@($f.InterfaceAlias) -join ',')] type=$(@($f.InterfaceAlias)[0].GetType().Name)" }
+          "--- ids ---"
+          (Get-AdapterFilterIds $a.Name) -join ' | '
+          "--- problem ---"
+          $p = Get-BlockRulesProblem $a.Name
+          if ($p) { "PROBLEM: $p"; $global:bad = $true } else { "OK: rules valid" }
+          Get-BlockRules | Remove-NetFirewallRule
+          if ($global:bad) { exit 1 }
