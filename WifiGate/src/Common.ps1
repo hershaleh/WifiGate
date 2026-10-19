@@ -89,7 +89,9 @@ function Get-AdapterFilterIds([string]$Alias) {
     try {
         $a = Get-WifiAdapter
         $ids += [string]$a.Name
-        $ids += [string]$a.InterfaceLuid
+        foreach ($pr in $a.PSObject.Properties) {          # the LUID property is named NetLuid
+            if ($pr.Name -eq 'NetLuid' -or $pr.Name -eq 'InterfaceLuid') { $ids += [string]$pr.Value }
+        }
     } catch { }
     return @($ids)
 }

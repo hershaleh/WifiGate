@@ -23,12 +23,18 @@ jobs:
             New-Item -ItemType Directory -Force $script:DataDir | Out-Null
             $nics = @(Get-NetAdapter | Where-Object Status -eq 'Up')
             foreach ($n in $nics) { L ("NIC: $($n.Name) | $($n.InterfaceDescription) | $($n.InterfaceGuid) | idx $($n.InterfaceIndex)") }
-            $a = $nics[0]
-            foreach ($pr in ($a.PSObject.Properties | Where-Object { $_.Name -match 'Luid' })) { L ("PROP $($pr.Name) = $($pr.Value)") }
-            ('{"AdapterGuid":"' + $a.InterfaceGuid + '"}') | Set-Content $script:ConfigFile
-            foreach ($d in 'Outbound','Inbound') {
-              New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup -Direction $d -Action Block -InterfaceAlias $a.Name -Profile Any -Enabled True | Out-Null
+            $a = $null
+            foreach ($cand in $nics) {
+              try {
+                ('{"AdapterGuid":"' + $cand.InterfaceGuid + '"}') | Set-Content $script:ConfigFile
+                foreach ($d in 'Outbound','Inbound') {
+                  New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup -Direction $d -Action Block -InterfaceAlias $cand.Name -Profile Any -Enabled True | Out-Null
+                }
+                $a = $cand; break
+              } catch { L ("create failed for $($cand.Name): " + $_.Exception.Message); Get-BlockRules | Remove-NetFirewallRule }
             }
+            if (-not $a) { throw 'no adapter accepted a rule' }
+            L ("USING: $($a.Name)")
             foreach ($r in (Get-BlockRules)) {
               $f = $r | Get-NetFirewallInterfaceFilter
               $v = @($f.InterfaceAlias)
