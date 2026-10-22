@@ -2,26 +2,15 @@
 # Requires Common.ps1 and Ui.ps1 to be loaded first. Event handlers use $script:ui / $script:cp / $script:dl.
 
 $script:AutoOptions = @(
-    @{ Text = 'ללא הגבלה'; Min = 0 }, @{ Text = '15 דקות'; Min = 15 }, @{ Text = '30 דקות'; Min = 30 },
-    @{ Text = 'שעה'; Min = 60 }, @{ Text = 'שעתיים'; Min = 120 }, @{ Text = '4 שעות'; Min = 240 }, @{ Text = '8 שעות'; Min = 480 }
+    @{ Text = 'ללא'; Min = 0 }, @{ Text = '15 ד׳'; Min = 15 }, @{ Text = '30 ד׳'; Min = 30 },
+    @{ Text = 'שעה'; Min = 60 }, @{ Text = '2 ש׳'; Min = 120 }, @{ Text = '4 ש׳'; Min = 240 }, @{ Text = '8 ש׳'; Min = 480 }
 )
-
-function New-ThemedCombo([int]$X, [int]$Y, [int]$W, $Options) {
-    $c = New-Object System.Windows.Forms.ComboBox
-    $c.DropDownStyle = 'DropDownList'; $c.FlatStyle = 'Flat'
-    $c.BackColor = $script:Theme.Card; $c.ForeColor = $script:Theme.Text
-    $c.Font = New-Object System.Drawing.Font('Segoe UI', 11)
-    $c.SetBounds($X, $Y, $W, 32)
-    foreach ($o in $Options) { [void]$c.Items.Add($o.Text) }
-    $c.SelectedIndex = 0
-    return $c
-}
 
 function Format-Remaining([timespan]$Left) {
     if ($Left.TotalSeconds -lt 60) { return 'פחות מדקה' }
     $h = [int][math]::Floor($Left.TotalHours); $m = $Left.Minutes
-    if ($h -gt 0) { return "$h שע' ו-$m דק'" }
-    return "$m דק'"
+    if ($h -gt 0) { return "$h שעות ו-$m דקות" }
+    return "$m דקות"
 }
 
 function Set-MainMessage([string]$Text, [string]$Kind = 'muted') {
@@ -38,16 +27,16 @@ function Update-MainView {
     $changed = ($ui.Locked -ne $st.Locked)
     $ui.Locked = $st.Locked
     if ($st.Locked) {
-        Set-IfChanged $ui.Status 'ה-Wi-Fi חסום'
+        Set-IfChanged $ui.Status 'Wi-Fi חסום'
         $ui.Status.ForeColor = $script:Theme.Danger
         Set-IfChanged $ui.Sub 'הזינו את הסיסמה כדי לפתוח את הגלישה'
     } else {
-        Set-IfChanged $ui.Status 'ה-Wi-Fi פתוח'
+        Set-IfChanged $ui.Status 'Wi-Fi פתוח'
         $ui.Status.ForeColor = $script:Theme.Ok
         if ($st.AutoLockAt) {
             $left = $st.AutoLockAt - (Get-Date)
             if ($left.TotalSeconds -lt 0) { $left = [timespan]::Zero }
-            Set-IfChanged $ui.Sub ("ייחסם אוטומטית בשעה " + $st.AutoLockAt.ToString('HH:mm') + " (בעוד " + (Format-Remaining $left) + ")")
+            Set-IfChanged $ui.Sub ("ייחסם אוטומטית בשעה " + $st.AutoLockAt.ToString('HH:mm') + " - בעוד " + (Format-Remaining $left))
         } else {
             Set-IfChanged $ui.Sub 'ללא נעילה אוטומטית. אפשר לקבוע טיימר למטה.'
         }
@@ -56,6 +45,12 @@ function Update-MainView {
     $ui.LockedGroup | ForEach-Object { $_.Visible = $st.Locked }
     $ui.OpenGroup   | ForEach-Object { $_.Visible = (-not $st.Locked) }
     $ui.BtnCancelTimer.Visible = ((-not $st.Locked) -and $hasTimer)
+    if ($hasTimer -ne $ui.HadTimer) {
+        $ui.HadTimer = $hasTimer
+        if ($hasTimer) { $ui.BtnSetTimer.SetBounds(30, 366, 163, 40); $ui.BtnCancelTimer.SetBounds(207, 366, 163, 40) }
+        else           { $ui.BtnSetTimer.SetBounds(30, 366, 340, 40) }
+        Set-Rounded $ui.BtnSetTimer 10; Set-Rounded $ui.BtnCancelTimer 10
+    }
     if ($changed) { $ui.Icon.Invalidate() }
 }
 
@@ -75,7 +70,7 @@ function Invoke-MainUnlock {
     Set-MainMessage 'בודק...' 'muted'; $ui.Form.Refresh()
     $ui.Input.Box.Clear()
     try {
-        $mins = [int]$script:AutoOptions[$ui.ComboLocked.SelectedIndex].Min
+        $mins = [int]$script:AutoOptions[$ui.ChipsLocked.Tag.Index].Min
         $r = Invoke-Unlock $pw $mins
         if ($r.Ok) {
             try { Set-ConfigValue 'LastAutoMinutes' $mins } catch { }
@@ -101,7 +96,7 @@ function Invoke-MainLock {
 
 function Invoke-MainSetTimer {
     $ui = $script:ui
-    $mins = [int]$script:AutoOptions[$ui.ComboOpen.SelectedIndex + 1].Min
+    $mins = [int]$script:AutoOptions[$ui.ChipsOpen.Tag.Index + 1].Min
     $st = Get-StateInfo
     if ($st.Locked) { Update-MainView; return }
     $newAt = (Get-Date).AddMinutes($mins)
@@ -151,37 +146,36 @@ function Paint-MainIcon($Sender, $E) {
 }
 
 function New-MainForm {
-    $ui = @{ Locked = $true; Busy = $false }
+    $ui = @{ Locked = $true; Busy = $false; HadTimer = $false }
     $script:ui = $ui
-    $f = New-ThemedForm 'WifiGate' 380 476
+    $f = New-ThemedForm 'WifiGate' 400 486
     $ui.Form = $f
 
     $ui.Icon = New-Object System.Windows.Forms.Panel
-    $ui.Icon.SetBounds(134, 22, 112, 112); $ui.Icon.BackColor = $script:Theme.Bg
+    $ui.Icon.SetBounds(144, 22, 112, 112); $ui.Icon.BackColor = $script:Theme.Bg
     Set-DoubleBuffered $ui.Icon
     $ui.Icon.Add_Paint({ param($s, $e) Paint-MainIcon $s $e })
-    $ui.Status = New-ThemedLabel '' 20 142 340 36 18 $script:Theme.Text $true
-    $ui.Sub    = New-ThemedLabel '' 20 180 340 40 10 $script:Theme.Muted
+    $ui.Status = New-ThemedLabel '' 20 142 360 36 18 $script:Theme.Text $true
+    $ui.Sub    = New-ThemedLabel '' 20 180 360 40 10 $script:Theme.Muted
 
     # --- locked view ---
-    $ui.Input = New-ThemedInput 40 232 300 $true
-    $lblDur = New-ThemedLabel 'אחרי הפתיחה, נעל שוב אוטומטית:' 40 286 300 20 9.5 $script:Theme.Muted
-    $ui.ComboLocked = New-ThemedCombo 40 308 300 $script:AutoOptions
-    $ui.BtnUnlock = New-ThemedButton 'פתח Wi-Fi' 40 352 300 48 'primary'
-    $ui.LockedGroup = @($ui.Input.Panel, $lblDur, $ui.ComboLocked, $ui.BtnUnlock)
+    $ui.Input = New-ThemedInput 30 232 340 $true
+    $lblDur = New-ThemedLabel 'אחרי הפתיחה, נעל שוב אוטומטית:' 30 290 340 20 9.5 $script:Theme.Muted
+    $ui.ChipsLocked = New-ChipRow 30 314 340 34 @($script:AutoOptions | ForEach-Object { $_.Text })
+    $ui.BtnUnlock = New-ThemedButton 'פתח Wi-Fi' 30 362 340 50 'primary'
+    $ui.LockedGroup = @($ui.Input.Panel, $lblDur, $ui.ChipsLocked, $ui.BtnUnlock)
 
     # --- open view ---
-    $ui.BtnLock = New-ThemedButton 'נעל עכשיו' 40 232 300 48 'danger'
-    $lblTimer = New-ThemedLabel 'נעילה אוטומטית בעוד:' 40 294 300 20 9.5 $script:Theme.Muted
-    $openOptions = @($script:AutoOptions | Select-Object -Skip 1)
-    $ui.ComboOpen = New-ThemedCombo 40 316 170 $openOptions
-    $ui.BtnSetTimer = New-ThemedButton 'קבע' 220 314 120 36 'ghost'
-    $ui.BtnCancelTimer = New-ThemedButton 'בטל נעילה אוטומטית' 40 360 300 40 'ghost'
-    $ui.OpenGroup = @($ui.BtnLock, $lblTimer, $ui.ComboOpen, $ui.BtnSetTimer)
+    $ui.BtnLock = New-ThemedButton 'נעל עכשיו' 30 232 340 50 'danger'
+    $lblTimer = New-ThemedLabel 'נעילה אוטומטית בעוד:' 30 294 340 20 9.5 $script:Theme.Muted
+    $ui.ChipsOpen = New-ChipRow 30 318 340 34 @($script:AutoOptions | Select-Object -Skip 1 | ForEach-Object { $_.Text })
+    $ui.BtnSetTimer = New-ThemedButton 'קבע טיימר' 30 366 340 40 'ghost'
+    $ui.BtnCancelTimer = New-ThemedButton 'בטל טיימר' 207 366 163 40 'ghost'
+    $ui.OpenGroup = @($ui.BtnLock, $lblTimer, $ui.ChipsOpen, $ui.BtnSetTimer)
 
-    $ui.Msg = New-ThemedLabel '' 20 408 340 24 9.5 $script:Theme.Muted
-    $ui.LinkPw = New-LinkLabel 'שינוי סיסמה' 40 440 140 24
-    $ui.LinkDaily = New-LinkLabel 'נעילה יומית' 200 440 140 24
+    $ui.Msg = New-ThemedLabel '' 20 418 360 24 9.5 $script:Theme.Muted
+    $ui.LinkPw = New-LinkLabel 'שינוי סיסמה' 40 450 150 24
+    $ui.LinkDaily = New-LinkLabel 'נעילה יומית' 210 450 150 24
 
     foreach ($c in @($ui.Icon, $ui.Status, $ui.Sub) + $ui.LockedGroup + $ui.OpenGroup + @($ui.BtnCancelTimer, $ui.Msg, $ui.LinkPw, $ui.LinkDaily)) { $f.Controls.Add($c) }
     $f.AcceptButton = $ui.BtnUnlock
@@ -190,7 +184,7 @@ function New-MainForm {
     try {
         $cfg = Read-Json $script:ConfigFile
         $last = [int](Get-Prop $cfg 'LastAutoMinutes' 0)
-        for ($i = 0; $i -lt $script:AutoOptions.Count; $i++) { if ($script:AutoOptions[$i].Min -eq $last) { $ui.ComboLocked.SelectedIndex = $i } }
+        for ($i = 0; $i -lt $script:AutoOptions.Count; $i++) { if ($script:AutoOptions[$i].Min -eq $last) { Select-Chip $ui.ChipsLocked $i } }
     } catch { }
 
     $ui.BtnUnlock.Add_Click({ Invoke-MainUnlock })
@@ -249,30 +243,40 @@ function Show-ChangePasswordDialog {
 
 # ---------- daily lock ----------
 
+function Update-DailyTime { $dl = $script:dl; $dl.TimeLbl.Text = ('{0:00}:{1:00}' -f $dl.Hour, $dl.Min) }
+
 function New-DailyLockForm {
-    $dl = @{}
+    $dl = @{ Hour = 23; Min = 0 }
     $script:dl = $dl
-    $f = New-ThemedForm 'WifiGate - נעילה יומית' 380 386
+    $f = New-ThemedForm 'WifiGate - נעילה יומית' 380 430
     $dl.Form = $f
     $f.Controls.Add((New-ThemedLabel 'נעילה יומית אוטומטית' 20 14 340 34 16 $script:Theme.Text $true))
-    $f.Controls.Add((New-ThemedLabel 'כל יום בשעה שתבחרו, ה-Wi-Fi ייחסם אם הוא פתוח.' 20 50 340 24 9.5 $script:Theme.Muted))
+    $f.Controls.Add((New-ThemedLabel 'כל יום בשעה שתבחרו, הגלישה תיחסם אם היא פתוחה.' 20 50 340 24 9.5 $script:Theme.Muted))
     $dl.Enable = New-Object System.Windows.Forms.CheckBox
-    $dl.Enable.Text = 'הפעל נעילה יומית'; $dl.Enable.SetBounds(30, 90, 320, 30)
+    $dl.Enable.Text = 'הפעל נעילה יומית'; $dl.Enable.SetBounds(30, 88, 320, 30)
     $dl.Enable.Font = New-Object System.Drawing.Font('Segoe UI', 11); $dl.Enable.ForeColor = $script:Theme.Text
     $dl.Enable.BackColor = [System.Drawing.Color]::Transparent
     $f.Controls.Add($dl.Enable)
-    $f.Controls.Add((New-ThemedLabel 'שעת הנעילה:' 30 128 120 32 10.5 $script:Theme.Muted $false 'MiddleRight'))
-    $dl.Time = New-Object System.Windows.Forms.DateTimePicker
-    $dl.Time.Format = 'Custom'; $dl.Time.CustomFormat = 'HH:mm'; $dl.Time.ShowUpDown = $true
-    $dl.Time.Font = New-Object System.Drawing.Font('Segoe UI', 12)
-    $dl.Time.SetBounds(160, 128, 110, 32)
-    $f.Controls.Add($dl.Time)
-    $pw = Add-Field $f 'סיסמה לאישור השינוי' 176 $true
+
+    $f.Controls.Add((New-ThemedLabel 'שעת הנעילה' 20 126 340 20 9.5 $script:Theme.Muted))
+    $dl.TimeLbl = New-ThemedLabel '23:00' 100 168 180 50 28 $script:Theme.Accent $true
+    $dl.TimeLbl.Font = New-Object System.Drawing.Font('Consolas', 28, [System.Drawing.FontStyle]::Bold)
+    $dl.TimeLbl.RightToLeft = 'No'
+    $f.Controls.Add($dl.TimeLbl)
+    $dl.HUp = New-ThemedButton '+' 112 140 56 28 'ghost'; $dl.HDn = New-ThemedButton '-' 112 220 56 28 'ghost'
+    $dl.MUp = New-ThemedButton '+' 212 140 56 28 'ghost'; $dl.MDn = New-ThemedButton '-' 212 220 56 28 'ghost'
+    foreach ($b in @($dl.HUp, $dl.HDn, $dl.MUp, $dl.MDn)) { $f.Controls.Add($b) }
+    $dl.HUp.Add_Click({ $d = $script:dl; $d.Hour = ($d.Hour + 1) % 24; Update-DailyTime })
+    $dl.HDn.Add_Click({ $d = $script:dl; $d.Hour = ($d.Hour + 23) % 24; Update-DailyTime })
+    $dl.MUp.Add_Click({ $d = $script:dl; $d.Min = ($d.Min + 5) % 60; Update-DailyTime })
+    $dl.MDn.Add_Click({ $d = $script:dl; $d.Min = ($d.Min + 55) % 60; Update-DailyTime })
+
+    $pw = Add-Field $f 'סיסמה לאישור השינוי' 262 $true
     $dl.Pw = $pw.Box
-    $dl.Msg = New-ThemedLabel '' 20 246 340 24 9.5 $script:Theme.Danger
+    $dl.Msg = New-ThemedLabel '' 20 332 340 22 9.5 $script:Theme.Danger
     $f.Controls.Add($dl.Msg)
-    $dl.Save = New-ThemedButton 'שמור' 195 290 165 46 'primary'
-    $cn = New-ThemedButton 'ביטול' 20 290 165 46 'ghost'
+    $dl.Save = New-ThemedButton 'שמור' 195 366 165 46 'primary'
+    $cn = New-ThemedButton 'ביטול' 20 366 165 46 'ghost'
     $cn.DialogResult = 'Cancel'
     $f.Controls.Add($dl.Save); $f.Controls.Add($cn)
     $f.AcceptButton = $dl.Save; $f.CancelButton = $cn
@@ -282,12 +286,13 @@ function New-DailyLockForm {
         $tm = '23:00'
         if ($cur) { $dl.Enable.Checked = [bool](Get-Prop $cur 'Enabled' $false); $tm = [string](Get-Prop $cur 'Time' '23:00') }
         $ts = [timespan]::Parse($tm)
-        $dl.Time.Value = [datetime]::Today.Add($ts)
+        $dl.Hour = [int]$ts.Hours; $dl.Min = [int]$ts.Minutes
     } catch { }
+    Update-DailyTime
     $dl.Save.Add_Click({
         $dl = $script:dl
         $dl.Save.Enabled = $false; $dl.Msg.Text = ''; $dl.Form.Refresh()
-        try { $r = Invoke-SaveDailyLock $dl.Pw.Text $dl.Enable.Checked $dl.Time.Value.ToString('HH:mm') } catch { Write-Log "daily lock error: $($_.Exception.Message)"; $r = New-Result $false 'אירעה שגיאה.' }
+        try { $r = Invoke-SaveDailyLock $dl.Pw.Text $dl.Enable.Checked ('{0:00}:{1:00}' -f $dl.Hour, $dl.Min) } catch { Write-Log "daily lock error: $($_.Exception.Message)"; $r = New-Result $false 'אירעה שגיאה.' }
         $dl.Save.Enabled = $true
         if ($r.Ok) { $dl.Form.DialogResult = 'OK' } else { $dl.Msg.Text = $r.Message; $dl.Pw.Clear(); $dl.Pw.Focus() }
     })

@@ -140,6 +140,41 @@ function New-ThemedInput([int]$X, [int]$Y, [int]$W, [bool]$Secret = $true) {
     return @{ Panel = $p; Box = $tb }
 }
 
+
+# A row of selectable "chips" (single choice). Selected index: $panel.Tag.Index
+function Select-Chip($Panel, [int]$Index) {
+    $ctx = $Panel.Tag
+    $ctx.Index = $Index
+    for ($i = 0; $i -lt $ctx.Buttons.Count; $i++) {
+        $b = $ctx.Buttons[$i]
+        if ($i -eq $Index) {
+            $b.BackColor = $script:Theme.Accent; $b.ForeColor = $script:Theme.AccentText
+            $b.FlatAppearance.MouseOverBackColor = $script:Theme.AccentHover; $b.FlatAppearance.MouseDownBackColor = $script:Theme.AccentHover
+        } else {
+            $b.BackColor = $script:Theme.Card; $b.ForeColor = $script:Theme.Text
+            $b.FlatAppearance.MouseOverBackColor = $script:Theme.CardHover; $b.FlatAppearance.MouseDownBackColor = $script:Theme.CardHover
+        }
+    }
+}
+
+function New-ChipRow([int]$X, [int]$Y, [int]$W, [int]$H, $Labels) {
+    $ctx = @{ Index = 0; Buttons = (New-Object System.Collections.ArrayList) }
+    $panel = New-Object System.Windows.Forms.Panel
+    $panel.SetBounds($X, $Y, $W, $H); $panel.BackColor = $script:Theme.Bg; $panel.Tag = $ctx
+    $n = @($Labels).Count; $gap = 6
+    $cw = [int][math]::Floor(($W - $gap * ($n - 1)) / $n)
+    for ($i = 0; $i -lt $n; $i++) {
+        $bx = $W - ($i + 1) * $cw - $i * $gap          # first chip on the right (Hebrew reading order)
+        $b = New-ThemedButton ([string]@($Labels)[$i]) $bx 0 $cw $H 'ghost'
+        $b.Font = New-Object System.Drawing.Font('Segoe UI', 9.5, [System.Drawing.FontStyle]::Bold)
+        $b.Tag = $i
+        $b.Add_Click({ param($s, $e) Select-Chip $s.Parent ([int]$s.Tag) })
+        $panel.Controls.Add($b); [void]$ctx.Buttons.Add($b)
+    }
+    Select-Chip $panel 0
+    return $panel
+}
+
 function Add-Field($Form, [string]$Caption, [int]$Y, [bool]$Secret = $true) {
     $Form.Controls.Add((New-ThemedLabel $Caption 28 $Y 324 20 9.5 $script:Theme.Muted $false 'MiddleRight'))
     $in = New-ThemedInput 20 ($Y + 22) 340 $Secret
@@ -200,7 +235,7 @@ function New-CodeDialogForm([string]$Code) {
     $lbl.RightToLeft = 'No'
     $card.Controls.Add($lbl)
     $f.Controls.Add($card)
-    $f.Controls.Add((New-ThemedLabel "רשמו אותו על נייר ושמרו במקום בטוח.`nהוא פותח את ה-Wi-Fi אם שכחתם את הסיסמה או אם החלון נכשל.`nהוא לא יוצג שוב." 30 164 380 76 10 $script:Theme.Muted))
+    $f.Controls.Add((New-ThemedLabel "רשמו אותו על נייר ושמרו במקום בטוח.`nהוא פותח את הגלישה אם שכחתם את הסיסמה.`nהוא לא יוצג שוב." 30 164 380 76 10 $script:Theme.Muted))
     $ok = New-ThemedButton 'רשמתי, המשך' 225 262 185 46 'primary'
     $cn = New-ThemedButton 'ביטול' 30 262 185 46 'ghost'
     $ok.DialogResult = 'OK'; $cn.DialogResult = 'Cancel'
