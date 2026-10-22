@@ -3,48 +3,35 @@ name: Test firewall logic
 on:
   workflow_dispatch:
   push:
-    paths: ['WifiGate/**', '.github/workflows/test.yml']
+    paths: ['WifiGate/**', 'tests/**', '.github/workflows/test.yml']
+
+permissions:
+  contents: write
 
 jobs:
-  firewall:
+  test:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Exercise block rules (Windows PowerShell 5.1)
+      - name: Syntax, logic and UI screenshots (Windows PowerShell 5.1)
         shell: powershell
         run: |
-          $out = New-Object System.Collections.ArrayList
-          function L($t) { [void]$out.Add([string]$t) }
-          $bad = $false
-          try {
-            $ErrorActionPreference = 'Stop'
-            L ("PS " + $PSVersionTable.PSVersion)
-            . .\WifiGate\src\Common.ps1
-            New-Item -ItemType Directory -Force $script:DataDir | Out-Null
-            $nics = @(Get-NetAdapter | Where-Object Status -eq 'Up')
-            foreach ($n in $nics) { L ("NIC: $($n.Name) | $($n.InterfaceDescription) | $($n.InterfaceGuid) | idx $($n.InterfaceIndex)") }
-            $a = $null
-            foreach ($cand in $nics) {
-              try {
-                ('{"AdapterGuid":"' + $cand.InterfaceGuid + '"}') | Set-Content $script:ConfigFile
-                foreach ($d in 'Outbound','Inbound') {
-                  New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup -Direction $d -Action Block -InterfaceAlias $cand.Name -Profile Any -Enabled True | Out-Null
-                }
-                $a = $cand; break
-              } catch { L ("create failed for $($cand.Name): " + $_.Exception.Message); Get-BlockRules | Remove-NetFirewallRule }
-            }
-            if (-not $a) { throw 'no adapter accepted a rule' }
-            L ("USING: $($a.Name)")
-            foreach ($r in (Get-BlockRules)) {
-              $f = $r | Get-NetFirewallInterfaceFilter
-              $v = @($f.InterfaceAlias)
-              L ("RULE $($r.DisplayName): Enabled=[$($r.Enabled)] Action=[$($r.Action)] Dir=[$($r.Direction)] Alias=[$($v -join ',')] type=$($v[0].GetType().Name)")
-            }
-            L ("IDS: " + ((Get-AdapterFilterIds $a.Name) -join ' | '))
-            $p = Get-BlockRulesProblem $a.Name
-            if ($p) { L "PROBLEM: $p"; $bad = $true } else { L "OK: rules valid" }
-            Get-BlockRules | Remove-NetFirewallRule
-          } catch { L ("EXCEPTION: " + $_.Exception.Message + " @ " + $_.InvocationInfo.PositionMessage); $bad = $true }
-          $text = ($out -join "`n") -replace "`r", '' -replace "`n", '%0A'
-          Write-Host ("::notice title=RESULT::" + $text)
-          if ($bad) { exit 1 }
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\ci.ps1 -Root "$PWD" -ShotDir "$PWD\shots"
+          exit $LASTEXITCODE
+      - name: Publish screenshots to ci-screens branch
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path shots) {
+            $tmp = Join-Path $env:RUNNER_TEMP 'shots'
+            New-Item -ItemType Directory -Force $tmp | Out-Null
+            Copy-Item shots\*.png $tmp
+            if (Test-Path ci-result.txt) { Copy-Item ci-result.txt $tmp }
+            git config user.name "ci"; git config user.email "ci@example.com"
+            git checkout --orphan ci-screens
+            git rm -rf . | Out-Null
+            Copy-Item "$tmp\*" .
+            git add -A
+            git commit -m "ci screenshots"
+            git push -f origin ci-screens
+          }

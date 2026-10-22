@@ -1,0 +1,301 @@
+﻿# WifiGate - Screens.ps1 : main window, change-password and daily-lock dialogs.
+# Requires Common.ps1 and Ui.ps1 to be loaded first. Event handlers use $script:ui / $script:cp / $script:dl.
+
+$script:AutoOptions = @(
+    @{ Text = 'ללא הגבלה'; Min = 0 }, @{ Text = '15 דקות'; Min = 15 }, @{ Text = '30 דקות'; Min = 30 },
+    @{ Text = 'שעה'; Min = 60 }, @{ Text = 'שעתיים'; Min = 120 }, @{ Text = '4 שעות'; Min = 240 }, @{ Text = '8 שעות'; Min = 480 }
+)
+
+function New-ThemedCombo([int]$X, [int]$Y, [int]$W, $Options) {
+    $c = New-Object System.Windows.Forms.ComboBox
+    $c.DropDownStyle = 'DropDownList'; $c.FlatStyle = 'Flat'
+    $c.BackColor = $script:T.Card; $c.ForeColor = $script:T.Text
+    $c.Font = New-Object System.Drawing.Font('Segoe UI', 11)
+    $c.SetBounds($X, $Y, $W, 32)
+    foreach ($o in $Options) { [void]$c.Items.Add($o.Text) }
+    $c.SelectedIndex = 0
+    return $c
+}
+
+function Format-Remaining([timespan]$Left) {
+    if ($Left.TotalSeconds -lt 60) { return 'פחות מדקה' }
+    $h = [int][math]::Floor($Left.TotalHours); $m = $Left.Minutes
+    if ($h -gt 0) { return "$h שע' ו-$m דק'" }
+    return "$m דק'"
+}
+
+function Set-MainMessage([string]$Text, [string]$Kind = 'muted') {
+    $ui = $script:ui
+    $ui.Msg.Text = $Text
+    switch ($Kind) { 'bad' { $ui.Msg.ForeColor = $script:T.Danger } 'ok' { $ui.Msg.ForeColor = $script:T.Ok } default { $ui.Msg.ForeColor = $script:T.Muted } }
+}
+
+function Set-IfChanged($Control, [string]$Text) { if ($Control.Text -ne $Text) { $Control.Text = $Text } }
+
+function Update-MainView {
+    $ui = $script:ui
+    $st = Get-StateInfo
+    $changed = ($ui.Locked -ne $st.Locked)
+    $ui.Locked = $st.Locked
+    if ($st.Locked) {
+        Set-IfChanged $ui.Status 'ה-Wi-Fi חסום'
+        $ui.Status.ForeColor = $script:T.Danger
+        Set-IfChanged $ui.Sub 'הזינו את הסיסמה כדי לפתוח את הגלישה'
+    } else {
+        Set-IfChanged $ui.Status 'ה-Wi-Fi פתוח'
+        $ui.Status.ForeColor = $script:T.Ok
+        if ($st.AutoLockAt) {
+            $left = $st.AutoLockAt - (Get-Date)
+            if ($left.TotalSeconds -lt 0) { $left = [timespan]::Zero }
+            Set-IfChanged $ui.Sub ("ייחסם אוטומטית בשעה " + $st.AutoLockAt.ToString('HH:mm') + " (בעוד " + (Format-Remaining $left) + ")")
+        } else {
+            Set-IfChanged $ui.Sub 'ללא נעילה אוטומטית. אפשר לקבוע טיימר למטה.'
+        }
+    }
+    $hasTimer = [bool]$st.AutoLockAt
+    $ui.LockedGroup | ForEach-Object { $_.Visible = $st.Locked }
+    $ui.OpenGroup   | ForEach-Object { $_.Visible = (-not $st.Locked) }
+    $ui.BtnCancelTimer.Visible = ((-not $st.Locked) -and $hasTimer)
+    if ($changed) { $ui.Icon.Invalidate() }
+}
+
+function Request-Password([string]$Prompt) {
+    $pw = Read-SecretDialog $Prompt
+    if ($null -eq $pw) { return $false }
+    $r = Test-AuthSecret $pw $true
+    if (-not $r.Ok) { Set-MainMessage $r.Message 'bad'; return $false }
+    return $true
+}
+
+function Invoke-MainUnlock {
+    $ui = $script:ui
+    $pw = $ui.Input.Box.Text
+    if (-not $pw) { Set-MainMessage 'הקלידו את הסיסמה.' 'bad'; return }
+    $ui.Busy = $true; $ui.BtnUnlock.Enabled = $false
+    Set-MainMessage 'בודק...' 'muted'; $ui.Form.Refresh()
+    $ui.Input.Box.Clear()
+    try {
+        $mins = [int]$script:AutoOptions[$ui.ComboLocked.SelectedIndex].Min
+        $r = Invoke-Unlock $pw $mins
+        if ($r.Ok) {
+            try { Set-ConfigValue 'LastAutoMinutes' $mins } catch { }
+            Set-MainMessage 'פותח את המתאם...' 'muted'; $ui.Form.Refresh()
+            $up = Wait-AdapterUp 20 { [System.Windows.Forms.Application]::DoEvents() }
+            if ($up) { Set-MainMessage 'Wi-Fi נפתח ומחובר.' 'ok' } else { Set-MainMessage 'Wi-Fi נפתח. ההתחברות לרשת עשויה לקחת כמה שניות.' 'ok' }
+        } else { Set-MainMessage $r.Message 'bad' }
+    } catch {
+        Write-Log "UI unlock error: $($_.Exception.Message)"
+        Set-MainMessage 'אירעה שגיאה. ראו README (שחזור).' 'bad'
+    }
+    $ui.Busy = $false; $ui.BtnUnlock.Enabled = $true
+    Update-MainView
+    if ($ui.Locked) { $ui.Input.Box.Focus() }
+}
+
+function Invoke-MainLock {
+    $ui = $script:ui
+    try { Invoke-Lock; Set-MainMessage 'Wi-Fi נחסם.' 'muted' } catch { Set-MainMessage 'שגיאה בחסימה.' 'bad'; Write-Log "UI lock error: $($_.Exception.Message)" }
+    Update-MainView
+    $ui.Input.Box.Focus()
+}
+
+function Invoke-MainSetTimer {
+    $ui = $script:ui
+    $mins = [int]$script:AutoOptions[$ui.ComboOpen.SelectedIndex + 1].Min
+    $st = Get-StateInfo
+    if ($st.Locked) { Update-MainView; return }
+    $newAt = (Get-Date).AddMinutes($mins)
+    # Extending an existing timer weakens the lock, so it needs the password.
+    if ($st.AutoLockAt -and $newAt -gt $st.AutoLockAt) {
+        if (-not (Request-Password 'הארכת זמן הנעילה דורשת סיסמה:')) { return }
+    }
+    try { Set-AutoLock $mins; Set-MainMessage 'הטיימר נקבע.' 'ok' } catch { Set-MainMessage 'שגיאה בקביעת הטיימר.' 'bad'; Write-Log "timer error: $($_.Exception.Message)" }
+    Update-MainView
+}
+
+function Invoke-MainCancelTimer {
+    if (-not (Request-Password 'ביטול הנעילה האוטומטית דורש סיסמה:')) { return }
+    try { Set-AutoLock 0; Set-MainMessage 'הנעילה האוטומטית בוטלה.' 'muted' } catch { Set-MainMessage 'שגיאה.' 'bad' }
+    Update-MainView
+}
+
+function Paint-MainIcon($Sender, $E) {
+    $g = $E.Graphics; $g.SmoothingMode = 'AntiAlias'
+    $w = $Sender.Width; $h = $Sender.Height
+    $locked = $true
+    if ($script:ui -and $script:ui.ContainsKey('Locked')) { $locked = $script:ui.Locked }
+    if ($locked) { $col = $script:T.Danger } else { $col = $script:T.Ok }
+    $bg = New-Object System.Drawing.SolidBrush($script:T.Card)
+    $g.FillEllipse($bg, 2, 2, ($w - 5), ($h - 5)); $bg.Dispose()
+    $ring = New-Object System.Drawing.Pen($col, [single]2.5)
+    $g.DrawEllipse($ring, 2, 2, ($w - 5), ($h - 5)); $ring.Dispose()
+    $cx = $w / 2; $by = $h * 0.66
+    $pen = New-Object System.Drawing.Pen($col, [single]($w * 0.07))
+    $pen.StartCap = 'Round'; $pen.EndCap = 'Round'
+    foreach ($k in 1, 2, 3) {
+        $r = $w * 0.15 * $k + $w * 0.02
+        $g.DrawArc($pen, [single]($cx - $r), [single]($by - $r), [single](2 * $r), [single](2 * $r), [single]225, [single]90)
+    }
+    $dot = New-Object System.Drawing.SolidBrush($col)
+    $d = $w * 0.085
+    $g.FillEllipse($dot, [single]($cx - $d), [single]($by - $d), [single](2 * $d), [single](2 * $d))
+    $dot.Dispose(); $pen.Dispose()
+    if ($locked) {
+        $cut = New-Object System.Drawing.Pen($script:T.Card, [single]($w * 0.13))
+        $sl = New-Object System.Drawing.Pen($col, [single]($w * 0.065))
+        $cut.StartCap = 'Round'; $cut.EndCap = 'Round'; $sl.StartCap = 'Round'; $sl.EndCap = 'Round'
+        $g.DrawLine($cut, [single]($w * 0.27), [single]($h * 0.22), [single]($w * 0.73), [single]($h * 0.80))
+        $g.DrawLine($sl,  [single]($w * 0.27), [single]($h * 0.22), [single]($w * 0.73), [single]($h * 0.80))
+        $cut.Dispose(); $sl.Dispose()
+    }
+}
+
+function New-MainForm {
+    $ui = @{ Locked = $true; Busy = $false }
+    $script:ui = $ui
+    $f = New-ThemedForm 'WifiGate' 380 476
+    $ui.Form = $f
+
+    $ui.Icon = New-Object System.Windows.Forms.Panel
+    $ui.Icon.SetBounds(134, 22, 112, 112); $ui.Icon.BackColor = $script:T.Bg
+    Set-DoubleBuffered $ui.Icon
+    $ui.Icon.Add_Paint({ param($s, $e) Paint-MainIcon $s $e })
+    $ui.Status = New-ThemedLabel '' 20 142 340 36 18 $script:T.Text $true
+    $ui.Sub    = New-ThemedLabel '' 20 180 340 40 10 $script:T.Muted
+
+    # --- locked view ---
+    $ui.Input = New-ThemedInput 40 232 300 $true
+    $lblDur = New-ThemedLabel 'אחרי הפתיחה, נעל שוב אוטומטית:' 40 286 300 20 9.5 $script:T.Muted
+    $ui.ComboLocked = New-ThemedCombo 40 308 300 $script:AutoOptions
+    $ui.BtnUnlock = New-ThemedButton 'פתח Wi-Fi' 40 352 300 48 'primary'
+    $ui.LockedGroup = @($ui.Input.Panel, $lblDur, $ui.ComboLocked, $ui.BtnUnlock)
+
+    # --- open view ---
+    $ui.BtnLock = New-ThemedButton 'נעל עכשיו' 40 232 300 48 'danger'
+    $lblTimer = New-ThemedLabel 'נעילה אוטומטית בעוד:' 40 294 300 20 9.5 $script:T.Muted
+    $openOptions = @($script:AutoOptions | Select-Object -Skip 1)
+    $ui.ComboOpen = New-ThemedCombo 40 316 170 $openOptions
+    $ui.BtnSetTimer = New-ThemedButton 'קבע' 220 314 120 36 'ghost'
+    $ui.BtnCancelTimer = New-ThemedButton 'בטל נעילה אוטומטית' 40 360 300 40 'ghost'
+    $ui.OpenGroup = @($ui.BtnLock, $lblTimer, $ui.ComboOpen, $ui.BtnSetTimer)
+
+    $ui.Msg = New-ThemedLabel '' 20 408 340 24 9.5 $script:T.Muted
+    $ui.LinkPw = New-LinkLabel 'שינוי סיסמה' 40 440 140 24
+    $ui.LinkDaily = New-LinkLabel 'נעילה יומית' 200 440 140 24
+
+    foreach ($c in @($ui.Icon, $ui.Status, $ui.Sub) + $ui.LockedGroup + $ui.OpenGroup + @($ui.BtnCancelTimer, $ui.Msg, $ui.LinkPw, $ui.LinkDaily)) { $f.Controls.Add($c) }
+    $f.AcceptButton = $ui.BtnUnlock
+
+    # remember the last chosen duration
+    try {
+        $cfg = Read-Json $script:ConfigFile
+        $last = [int](Get-Prop $cfg 'LastAutoMinutes' 0)
+        for ($i = 0; $i -lt $script:AutoOptions.Count; $i++) { if ($script:AutoOptions[$i].Min -eq $last) { $ui.ComboLocked.SelectedIndex = $i } }
+    } catch { }
+
+    $ui.BtnUnlock.Add_Click({ Invoke-MainUnlock })
+    $ui.BtnLock.Add_Click({ Invoke-MainLock })
+    $ui.BtnSetTimer.Add_Click({ Invoke-MainSetTimer })
+    $ui.BtnCancelTimer.Add_Click({ Invoke-MainCancelTimer })
+    $ui.LinkPw.Add_Click({ if (Show-ChangePasswordDialog) { Set-MainMessage 'הסיסמה שונתה.' 'ok' } })
+    $ui.LinkDaily.Add_Click({ if (Show-DailyLockDialog) { Set-MainMessage 'ההגדרה נשמרה.' 'ok' } })
+
+    $ui.Timer = New-Object System.Windows.Forms.Timer
+    $ui.Timer.Interval = 1000
+    $ui.Timer.Add_Tick({ if (-not $script:ui.Busy) { Update-MainView } })
+    $f.Add_Shown({ Update-MainView; $script:ui.Timer.Start(); if ($script:ui.Locked) { $script:ui.Input.Box.Focus() } })
+    $f.Add_FormClosed({ $script:ui.Timer.Stop() })
+    Update-MainView
+    return $f
+}
+
+# ---------- change password ----------
+
+function New-ChangePasswordForm {
+    $cp = @{}
+    $script:cp = $cp
+    $f = New-ThemedForm 'WifiGate - שינוי סיסמה' 380 404
+    $cp.Form = $f
+    $f.Controls.Add((New-ThemedLabel 'שינוי סיסמה' 20 14 340 34 16 $script:T.Text $true))
+    $cur = Add-Field $f 'הסיסמה הנוכחית (או קוד השחזור)' 58 $true
+    $new = Add-Field $f 'סיסמה חדשה (לפחות 8 תווים)' 128 $true
+    $rep = Add-Field $f 'אימות הסיסמה החדשה' 198 $true
+    $cp.Cur = $cur.Box; $cp.New = $new.Box; $cp.Rep = $rep.Box
+    $cp.Msg = New-ThemedLabel '' 20 268 340 24 9.5 $script:T.Danger
+    $f.Controls.Add($cp.Msg)
+    $cp.Save = New-ThemedButton 'שמור' 195 306 165 46 'primary'
+    $cn = New-ThemedButton 'ביטול' 20 306 165 46 'ghost'
+    $cn.DialogResult = 'Cancel'
+    $f.Controls.Add($cp.Save); $f.Controls.Add($cn)
+    $f.AcceptButton = $cp.Save; $f.CancelButton = $cn
+    $cp.Save.Add_Click({
+        $cp = $script:cp
+        if ($cp.New.Text -ne $cp.Rep.Text) { $cp.Msg.Text = 'הסיסמאות החדשות אינן זהות.'; return }
+        if ($cp.New.Text.Length -lt 8) { $cp.Msg.Text = 'הסיסמה החדשה קצרה מדי (מינימום 8 תווים).'; return }
+        $cp.Save.Enabled = $false; $cp.Msg.Text = ''; $cp.Form.Refresh()
+        try { $r = Invoke-ChangePassword $cp.Cur.Text $cp.New.Text } catch { Write-Log "change password error: $($_.Exception.Message)"; $r = New-Result $false 'אירעה שגיאה.' }
+        $cp.Save.Enabled = $true
+        if ($r.Ok) { $cp.Form.DialogResult = 'OK' } else { $cp.Msg.Text = $r.Message; $cp.Cur.Clear(); $cp.Cur.Focus() }
+    })
+    $f.Add_Shown({ $script:cp.Cur.Focus() })
+    return $f
+}
+
+function Show-ChangePasswordDialog {
+    $f = New-ChangePasswordForm
+    $res = $f.ShowDialog(); $f.Dispose()
+    return ([string]$res -eq 'OK')
+}
+
+# ---------- daily lock ----------
+
+function New-DailyLockForm {
+    $dl = @{}
+    $script:dl = $dl
+    $f = New-ThemedForm 'WifiGate - נעילה יומית' 380 386
+    $dl.Form = $f
+    $f.Controls.Add((New-ThemedLabel 'נעילה יומית אוטומטית' 20 14 340 34 16 $script:T.Text $true))
+    $f.Controls.Add((New-ThemedLabel 'כל יום בשעה שתבחרו, ה-Wi-Fi ייחסם אם הוא פתוח.' 20 50 340 24 9.5 $script:T.Muted))
+    $dl.Enable = New-Object System.Windows.Forms.CheckBox
+    $dl.Enable.Text = 'הפעל נעילה יומית'; $dl.Enable.SetBounds(30, 90, 320, 30)
+    $dl.Enable.Font = New-Object System.Drawing.Font('Segoe UI', 11); $dl.Enable.ForeColor = $script:T.Text
+    $dl.Enable.BackColor = [System.Drawing.Color]::Transparent
+    $f.Controls.Add($dl.Enable)
+    $f.Controls.Add((New-ThemedLabel 'שעת הנעילה:' 30 128 120 32 10.5 $script:T.Muted $false 'MiddleRight'))
+    $dl.Time = New-Object System.Windows.Forms.DateTimePicker
+    $dl.Time.Format = 'Custom'; $dl.Time.CustomFormat = 'HH:mm'; $dl.Time.ShowUpDown = $true
+    $dl.Time.Font = New-Object System.Drawing.Font('Segoe UI', 12)
+    $dl.Time.SetBounds(160, 128, 110, 32)
+    $f.Controls.Add($dl.Time)
+    $pw = Add-Field $f 'סיסמה לאישור השינוי' 176 $true
+    $dl.Pw = $pw.Box
+    $dl.Msg = New-ThemedLabel '' 20 246 340 24 9.5 $script:T.Danger
+    $f.Controls.Add($dl.Msg)
+    $dl.Save = New-ThemedButton 'שמור' 195 290 165 46 'primary'
+    $cn = New-ThemedButton 'ביטול' 20 290 165 46 'ghost'
+    $cn.DialogResult = 'Cancel'
+    $f.Controls.Add($dl.Save); $f.Controls.Add($cn)
+    $f.AcceptButton = $dl.Save; $f.CancelButton = $cn
+    try {
+        $cfg = Read-Json $script:ConfigFile
+        $cur = Get-Prop $cfg 'DailyLock' $null
+        $tm = '23:00'
+        if ($cur) { $dl.Enable.Checked = [bool](Get-Prop $cur 'Enabled' $false); $tm = [string](Get-Prop $cur 'Time' '23:00') }
+        $ts = [timespan]::Parse($tm)
+        $dl.Time.Value = [datetime]::Today.Add($ts)
+    } catch { }
+    $dl.Save.Add_Click({
+        $dl = $script:dl
+        $dl.Save.Enabled = $false; $dl.Msg.Text = ''; $dl.Form.Refresh()
+        try { $r = Invoke-SaveDailyLock $dl.Pw.Text $dl.Enable.Checked $dl.Time.Value.ToString('HH:mm') } catch { Write-Log "daily lock error: $($_.Exception.Message)"; $r = New-Result $false 'אירעה שגיאה.' }
+        $dl.Save.Enabled = $true
+        if ($r.Ok) { $dl.Form.DialogResult = 'OK' } else { $dl.Msg.Text = $r.Message; $dl.Pw.Clear(); $dl.Pw.Focus() }
+    })
+    return $f
+}
+
+function Show-DailyLockDialog {
+    $f = New-DailyLockForm
+    $res = $f.ShowDialog(); $f.Dispose()
+    return ([string]$res -eq 'OK')
+}

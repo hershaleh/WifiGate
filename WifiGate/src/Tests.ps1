@@ -137,25 +137,21 @@ function Test-Traffic {
 }
 
 # ---------- menu ----------
-$form = New-Object System.Windows.Forms.Form
-$form.Text = 'WifiGate - בדיקות'; $form.RightToLeft = 'Yes'; $form.RightToLeftLayout = $true
-$form.StartPosition = 'CenterScreen'; $form.FormBorderStyle = 'FixedDialog'; $form.MaximizeBox = $false
-$form.ClientSize = New-Object System.Drawing.Size(380, 250); $form.TopMost = $true
-$form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+$form = New-ThemedForm 'WifiGate - בדיקות' 400 330
+$form.Controls.Add((New-ThemedLabel 'בדיקות' 20 14 360 34 16 $script:T.Text $true))
 $items = @(
     @('1. בדיקה כללית (חסימה, משימות, Ethernet)',                    { Test-General;     Finish-Report 'בדיקה כללית' }),
     @('2. בדיקה אחרי אתחול',                                         { Test-AfterReboot; Finish-Report 'בדיקה אחרי אתחול' }),
     @('3. בדיקת פתיחה בסיסמה (פעולה אחת)',                           { Test-UnlockFlow;  Finish-Report 'בדיקת פתיחה' }),
     @('4. בדיקת גלישה והפעלה מחדש של המתאם (נתקו Ethernet)',       { Test-Traffic;     Finish-Report 'בדיקת גלישה' })
 )
-$y = 15
+$y = 60
 foreach ($it in $items) {
-    $b = New-Object System.Windows.Forms.Button
-    $b.Text = $it[0]; $b.SetBounds(20, $y, 340, 45)
-    $act = $it[1]
+    $b = New-ThemedButton $it[0] 20 $y 360 50 'ghost'
+    $b.Font = New-Object System.Drawing.Font('Segoe UI', 10)
     $b.Add_Click({ param($s, $e) $s.Enabled = $false; try { & $s.Tag } catch { Add-Res 'FAIL' "שגיאה: $($_.Exception.Message)"; Finish-Report 'שגיאה' } finally { $s.Enabled = $true } })
-    $b.Tag = $act
+    $b.Tag = $it[1]
     $form.Controls.Add($b)
-    $y += 55
+    $y += 62
 }
 [void]$form.ShowDialog()

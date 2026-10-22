@@ -48,8 +48,37 @@ function New-Result([bool]$Ok, [string]$Message) {
     [pscustomobject]@{ Ok = $Ok; Message = $Message }
 }
 
-function Set-State([string]$Mode) {
-    Write-Json $script:StateFile ([pscustomobject]@{ Mode = $Mode; ChangedAt = (Get-Date).ToString('o') })
+function Set-State([string]$Mode, [string]$AutoLockAt = '') {
+    Write-Json $script:StateFile ([pscustomobject]@{ Mode = $Mode; ChangedAt = (Get-Date).ToString('o'); AutoLockAt = $AutoLockAt })
+}
+
+# Safe property read (StrictMode throws on missing properties).
+function Get-Prop($Obj, [string]$Name, $Default = $null) {
+    if ($null -ne $Obj -and $Obj.PSObject.Properties[$Name]) { return $Obj.$Name }
+    return $Default
+}
+
+function Set-ConfigValue([string]$Name, $Value) {
+    $c = Read-Json $script:ConfigFile
+    if (-not $c) { throw 'config.json missing' }
+    $h = [ordered]@{}
+    foreach ($p in $c.PSObject.Properties) { $h[$p.Name] = $p.Value }
+    $h[$Name] = $Value
+    Write-Json $script:ConfigFile ([pscustomobject]$h)
+}
+
+# For the UI: is Wi-Fi locked, and when (if ever) will it auto-lock.
+function Get-StateInfo {
+    $locked = $true; $at = $null
+    try {
+        $s = Read-Json $script:StateFile
+        if ($s -and $s.Mode -eq 'unlocked') {
+            $locked = $false
+            $v = [string](Get-Prop $s 'AutoLockAt' '')
+            if ($v) { $at = [datetime]$v }
+        }
+    } catch { }
+    return [pscustomobject]@{ Locked = $locked; AutoLockAt = $at }
 }
 
 # ---------- adapter (always identified by GUID, never by name) ----------
@@ -187,26 +216,106 @@ function ConvertTo-NormalCode([string]$Code) { return (($Code.ToUpper()) -replac
 
 # ---------- unlock / recovery ----------
 
-function Invoke-Unlock([string]$Password) {
+# ---------- authentication (shared throttle) ----------
+
+function Get-ThrottleWait {
     $t = Read-Json $script:ThrottleFile
     if ($t -and $t.Until -and ([datetime]$t.Until) -gt (Get-Date)) {
-        $s = [int]((([datetime]$t.Until) - (Get-Date)).TotalSeconds) + 1
-        return (New-Result $false "יותר מדי ניסיונות. נסו שוב בעוד $s שניות.")
+        return ([int]((([datetime]$t.Until) - (Get-Date)).TotalSeconds) + 1)
     }
+    return 0
+}
+
+function Register-AuthFailure {
+    $t = Read-Json $script:ThrottleFile
+    $f = 1; if ($t) { $f = [int]$t.Fails + 1 }
+    $until = ''
+    if ($f -ge 5) { $until = (Get-Date).AddSeconds([math]::Min(30 * ($f - 4), 600)).ToString('o') }
+    Write-Json $script:ThrottleFile ([pscustomobject]@{ Fails = $f; Until = $until })
+    Write-Log "auth failed (#$f)"
+}
+
+# Checks the password (and, if allowed, the recovery code) with brute-force throttling.
+function Test-AuthSecret([string]$Secret, [bool]$AllowRecovery = $false) {
+    $w = Get-ThrottleWait
+    if ($w -gt 0) { return (New-Result $false "יותר מדי ניסיונות. נסו שוב בעוד $w שניות.") }
     $auth = Read-Json $script:AuthFile
-    if (-not $auth -or -not (Test-SecretRecord $Password $auth.Password)) {
-        $f = 1; if ($t) { $f = [int]$t.Fails + 1 }
-        $until = ''
-        if ($f -ge 5) { $until = (Get-Date).AddSeconds([math]::Min(30 * ($f - 4), 600)).ToString('o') }
-        Write-Json $script:ThrottleFile ([pscustomobject]@{ Fails = $f; Until = $until })
-        Write-Log "unlock failed (#$f)"
+    $ok = $false
+    if ($auth) {
+        $ok = Test-SecretRecord $Secret $auth.Password
+        if (-not $ok -and $AllowRecovery) { $ok = Test-SecretRecord (ConvertTo-NormalCode $Secret) $auth.Recovery }
+    }
+    if (-not $ok) {
+        Register-AuthFailure
+        if ($AllowRecovery) { return (New-Result $false 'הסיסמה או קוד השחזור שגויים.') }
         return (New-Result $false 'הסיסמה שגויה.')
     }
-    Clear-WifiBlock                 # remove rules + enable adapter
-    Set-State 'unlocked'
     Write-Json $script:ThrottleFile ([pscustomobject]@{ Fails = 0; Until = '' })
-    Write-Log 'unlocked with password'
+    return (New-Result $true '')
+}
+
+# ---------- unlock / recovery ----------
+
+# AutoLockMinutes > 0: the Wi-Fi locks itself again after that many minutes (enforced by the Tick task).
+function Invoke-Unlock([string]$Password, [int]$AutoLockMinutes = 0) {
+    $a = Test-AuthSecret $Password $false
+    if (-not $a.Ok) { return $a }
+    Clear-WifiBlock                 # remove rules + enable adapter
+    $at = ''
+    if ($AutoLockMinutes -gt 0) { $at = (Get-Date).AddMinutes($AutoLockMinutes).ToString('o') }
+    Set-State 'unlocked' $at
+    Write-Log "unlocked with password (auto-lock: $AutoLockMinutes min)"
     return (New-Result $true 'Wi-Fi נפתח.')
+}
+
+# While unlocked: set (Minutes > 0) or remove (0) the auto-lock time. Keeps the original unlock time.
+function Set-AutoLock([int]$Minutes) {
+    $st = Read-Json $script:StateFile
+    if (-not $st -or $st.Mode -ne 'unlocked') { throw 'Wi-Fi is not unlocked' }
+    $at = ''
+    if ($Minutes -gt 0) { $at = (Get-Date).AddMinutes($Minutes).ToString('o') }
+    Write-Json $script:StateFile ([pscustomobject]@{ Mode = 'unlocked'; ChangedAt = $st.ChangedAt; AutoLockAt = $at })
+    Write-Log "auto-lock set: $Minutes min"
+}
+
+function Invoke-ChangePassword([string]$Current, [string]$New) {
+    if ($New.Length -lt 8) { return (New-Result $false 'הסיסמה החדשה קצרה מדי (מינימום 8 תווים).') }
+    $a = Test-AuthSecret $Current $true
+    if (-not $a.Ok) { return $a }
+    $auth = Read-Json $script:AuthFile
+    Write-Json $script:AuthFile ([pscustomobject]@{ Version = 1; Password = (New-SecretRecord $New); Recovery = $auth.Recovery })
+    Write-Log 'password changed'
+    return (New-Result $true 'הסיסמה שונתה.')
+}
+
+function Invoke-SaveDailyLock([string]$Password, [bool]$Enabled, [string]$Time) {
+    $ts = [timespan]::Zero
+    if (-not [timespan]::TryParse($Time, [ref]$ts) -or $ts.TotalHours -ge 24 -or $ts.TotalSeconds -lt 0) { return (New-Result $false 'שעה לא תקינה.') }
+    $a = Test-AuthSecret $Password $true
+    if (-not $a.Ok) { return $a }
+    Set-ConfigValue 'DailyLock' ([pscustomobject]@{ Enabled = $Enabled; Time = $ts.ToString('hh\:mm') })
+    Write-Log "daily lock: enabled=$Enabled time=$Time"
+    return (New-Result $true 'ההגדרה נשמרה.')
+}
+
+# Used by the Tick task while unlocked: has the auto-lock time passed, or the daily lock time?
+function Test-LockDue {
+    $st = Read-Json $script:StateFile
+    if (-not $st -or $st.Mode -ne 'unlocked') { return $false }
+    $now = Get-Date
+    $v = [string](Get-Prop $st 'AutoLockAt' '')
+    if ($v -and ([datetime]$v) -le $now) { return $true }
+    $cfg = Read-Json $script:ConfigFile
+    $dl = Get-Prop $cfg 'DailyLock' $null
+    if ($dl -and [bool](Get-Prop $dl 'Enabled' $false)) {
+        $ts = [timespan]::Zero
+        if ([timespan]::TryParse([string](Get-Prop $dl 'Time' '23:00'), [ref]$ts)) {
+            $due = $now.Date + $ts
+            $changed = [datetime][string](Get-Prop $st 'ChangedAt' $now.ToString('o'))
+            if ($now -ge $due -and $changed -lt $due) { return $true }
+        }
+    }
+    return $false
 }
 
 # Accepts the password OR the recovery code. Opens Wi-Fi; does not uninstall.
