@@ -138,7 +138,7 @@ function Test-Traffic {
 
 # ---------- menu ----------
 $form = New-ThemedForm 'WifiGate - בדיקות' 400 330
-$form.Controls.Add((New-ThemedLabel 'בדיקות' 20 14 360 34 16 $script:T.Text $true))
+$form.Controls.Add((New-ThemedLabel 'בדיקות' 20 14 360 34 16 $script:Theme.Text $true))
 $items = @(
     @('1. בדיקה כללית (חסימה, משימות, Ethernet)',                    { Test-General;     Finish-Report 'בדיקה כללית' }),
     @('2. בדיקה אחרי אתחול',                                         { Test-AfterReboot; Finish-Report 'בדיקה אחרי אתחול' }),

@@ -9,7 +9,7 @@ $script:AutoOptions = @(
 function New-ThemedCombo([int]$X, [int]$Y, [int]$W, $Options) {
     $c = New-Object System.Windows.Forms.ComboBox
     $c.DropDownStyle = 'DropDownList'; $c.FlatStyle = 'Flat'
-    $c.BackColor = $script:T.Card; $c.ForeColor = $script:T.Text
+    $c.BackColor = $script:Theme.Card; $c.ForeColor = $script:Theme.Text
     $c.Font = New-Object System.Drawing.Font('Segoe UI', 11)
     $c.SetBounds($X, $Y, $W, 32)
     foreach ($o in $Options) { [void]$c.Items.Add($o.Text) }
@@ -27,7 +27,7 @@ function Format-Remaining([timespan]$Left) {
 function Set-MainMessage([string]$Text, [string]$Kind = 'muted') {
     $ui = $script:ui
     $ui.Msg.Text = $Text
-    switch ($Kind) { 'bad' { $ui.Msg.ForeColor = $script:T.Danger } 'ok' { $ui.Msg.ForeColor = $script:T.Ok } default { $ui.Msg.ForeColor = $script:T.Muted } }
+    switch ($Kind) { 'bad' { $ui.Msg.ForeColor = $script:Theme.Danger } 'ok' { $ui.Msg.ForeColor = $script:Theme.Ok } default { $ui.Msg.ForeColor = $script:Theme.Muted } }
 }
 
 function Set-IfChanged($Control, [string]$Text) { if ($Control.Text -ne $Text) { $Control.Text = $Text } }
@@ -39,11 +39,11 @@ function Update-MainView {
     $ui.Locked = $st.Locked
     if ($st.Locked) {
         Set-IfChanged $ui.Status 'ה-Wi-Fi חסום'
-        $ui.Status.ForeColor = $script:T.Danger
+        $ui.Status.ForeColor = $script:Theme.Danger
         Set-IfChanged $ui.Sub 'הזינו את הסיסמה כדי לפתוח את הגלישה'
     } else {
         Set-IfChanged $ui.Status 'ה-Wi-Fi פתוח'
-        $ui.Status.ForeColor = $script:T.Ok
+        $ui.Status.ForeColor = $script:Theme.Ok
         if ($st.AutoLockAt) {
             $left = $st.AutoLockAt - (Get-Date)
             if ($left.TotalSeconds -lt 0) { $left = [timespan]::Zero }
@@ -124,8 +124,8 @@ function Paint-MainIcon($Sender, $E) {
     $w = $Sender.Width; $h = $Sender.Height
     $locked = $true
     if ($script:ui -and $script:ui.ContainsKey('Locked')) { $locked = $script:ui.Locked }
-    if ($locked) { $col = $script:T.Danger } else { $col = $script:T.Ok }
-    $bg = New-Object System.Drawing.SolidBrush($script:T.Card)
+    if ($locked) { $col = $script:Theme.Danger } else { $col = $script:Theme.Ok }
+    $bg = New-Object System.Drawing.SolidBrush($script:Theme.Card)
     $g.FillEllipse($bg, 2, 2, ($w - 5), ($h - 5)); $bg.Dispose()
     $ring = New-Object System.Drawing.Pen($col, [single]2.5)
     $g.DrawEllipse($ring, 2, 2, ($w - 5), ($h - 5)); $ring.Dispose()
@@ -141,7 +141,7 @@ function Paint-MainIcon($Sender, $E) {
     $g.FillEllipse($dot, [single]($cx - $d), [single]($by - $d), [single](2 * $d), [single](2 * $d))
     $dot.Dispose(); $pen.Dispose()
     if ($locked) {
-        $cut = New-Object System.Drawing.Pen($script:T.Card, [single]($w * 0.13))
+        $cut = New-Object System.Drawing.Pen($script:Theme.Card, [single]($w * 0.13))
         $sl = New-Object System.Drawing.Pen($col, [single]($w * 0.065))
         $cut.StartCap = 'Round'; $cut.EndCap = 'Round'; $sl.StartCap = 'Round'; $sl.EndCap = 'Round'
         $g.DrawLine($cut, [single]($w * 0.27), [single]($h * 0.22), [single]($w * 0.73), [single]($h * 0.80))
@@ -157,29 +157,29 @@ function New-MainForm {
     $ui.Form = $f
 
     $ui.Icon = New-Object System.Windows.Forms.Panel
-    $ui.Icon.SetBounds(134, 22, 112, 112); $ui.Icon.BackColor = $script:T.Bg
+    $ui.Icon.SetBounds(134, 22, 112, 112); $ui.Icon.BackColor = $script:Theme.Bg
     Set-DoubleBuffered $ui.Icon
     $ui.Icon.Add_Paint({ param($s, $e) Paint-MainIcon $s $e })
-    $ui.Status = New-ThemedLabel '' 20 142 340 36 18 $script:T.Text $true
-    $ui.Sub    = New-ThemedLabel '' 20 180 340 40 10 $script:T.Muted
+    $ui.Status = New-ThemedLabel '' 20 142 340 36 18 $script:Theme.Text $true
+    $ui.Sub    = New-ThemedLabel '' 20 180 340 40 10 $script:Theme.Muted
 
     # --- locked view ---
     $ui.Input = New-ThemedInput 40 232 300 $true
-    $lblDur = New-ThemedLabel 'אחרי הפתיחה, נעל שוב אוטומטית:' 40 286 300 20 9.5 $script:T.Muted
+    $lblDur = New-ThemedLabel 'אחרי הפתיחה, נעל שוב אוטומטית:' 40 286 300 20 9.5 $script:Theme.Muted
     $ui.ComboLocked = New-ThemedCombo 40 308 300 $script:AutoOptions
     $ui.BtnUnlock = New-ThemedButton 'פתח Wi-Fi' 40 352 300 48 'primary'
     $ui.LockedGroup = @($ui.Input.Panel, $lblDur, $ui.ComboLocked, $ui.BtnUnlock)
 
     # --- open view ---
     $ui.BtnLock = New-ThemedButton 'נעל עכשיו' 40 232 300 48 'danger'
-    $lblTimer = New-ThemedLabel 'נעילה אוטומטית בעוד:' 40 294 300 20 9.5 $script:T.Muted
+    $lblTimer = New-ThemedLabel 'נעילה אוטומטית בעוד:' 40 294 300 20 9.5 $script:Theme.Muted
     $openOptions = @($script:AutoOptions | Select-Object -Skip 1)
     $ui.ComboOpen = New-ThemedCombo 40 316 170 $openOptions
     $ui.BtnSetTimer = New-ThemedButton 'קבע' 220 314 120 36 'ghost'
     $ui.BtnCancelTimer = New-ThemedButton 'בטל נעילה אוטומטית' 40 360 300 40 'ghost'
     $ui.OpenGroup = @($ui.BtnLock, $lblTimer, $ui.ComboOpen, $ui.BtnSetTimer)
 
-    $ui.Msg = New-ThemedLabel '' 20 408 340 24 9.5 $script:T.Muted
+    $ui.Msg = New-ThemedLabel '' 20 408 340 24 9.5 $script:Theme.Muted
     $ui.LinkPw = New-LinkLabel 'שינוי סיסמה' 40 440 140 24
     $ui.LinkDaily = New-LinkLabel 'נעילה יומית' 200 440 140 24
 
@@ -216,12 +216,12 @@ function New-ChangePasswordForm {
     $script:cp = $cp
     $f = New-ThemedForm 'WifiGate - שינוי סיסמה' 380 404
     $cp.Form = $f
-    $f.Controls.Add((New-ThemedLabel 'שינוי סיסמה' 20 14 340 34 16 $script:T.Text $true))
+    $f.Controls.Add((New-ThemedLabel 'שינוי סיסמה' 20 14 340 34 16 $script:Theme.Text $true))
     $cur = Add-Field $f 'הסיסמה הנוכחית (או קוד השחזור)' 58 $true
     $new = Add-Field $f 'סיסמה חדשה (לפחות 8 תווים)' 128 $true
     $rep = Add-Field $f 'אימות הסיסמה החדשה' 198 $true
     $cp.Cur = $cur.Box; $cp.New = $new.Box; $cp.Rep = $rep.Box
-    $cp.Msg = New-ThemedLabel '' 20 268 340 24 9.5 $script:T.Danger
+    $cp.Msg = New-ThemedLabel '' 20 268 340 24 9.5 $script:Theme.Danger
     $f.Controls.Add($cp.Msg)
     $cp.Save = New-ThemedButton 'שמור' 195 306 165 46 'primary'
     $cn = New-ThemedButton 'ביטול' 20 306 165 46 'ghost'
@@ -254,14 +254,14 @@ function New-DailyLockForm {
     $script:dl = $dl
     $f = New-ThemedForm 'WifiGate - נעילה יומית' 380 386
     $dl.Form = $f
-    $f.Controls.Add((New-ThemedLabel 'נעילה יומית אוטומטית' 20 14 340 34 16 $script:T.Text $true))
-    $f.Controls.Add((New-ThemedLabel 'כל יום בשעה שתבחרו, ה-Wi-Fi ייחסם אם הוא פתוח.' 20 50 340 24 9.5 $script:T.Muted))
+    $f.Controls.Add((New-ThemedLabel 'נעילה יומית אוטומטית' 20 14 340 34 16 $script:Theme.Text $true))
+    $f.Controls.Add((New-ThemedLabel 'כל יום בשעה שתבחרו, ה-Wi-Fi ייחסם אם הוא פתוח.' 20 50 340 24 9.5 $script:Theme.Muted))
     $dl.Enable = New-Object System.Windows.Forms.CheckBox
     $dl.Enable.Text = 'הפעל נעילה יומית'; $dl.Enable.SetBounds(30, 90, 320, 30)
-    $dl.Enable.Font = New-Object System.Drawing.Font('Segoe UI', 11); $dl.Enable.ForeColor = $script:T.Text
+    $dl.Enable.Font = New-Object System.Drawing.Font('Segoe UI', 11); $dl.Enable.ForeColor = $script:Theme.Text
     $dl.Enable.BackColor = [System.Drawing.Color]::Transparent
     $f.Controls.Add($dl.Enable)
-    $f.Controls.Add((New-ThemedLabel 'שעת הנעילה:' 30 128 120 32 10.5 $script:T.Muted $false 'MiddleRight'))
+    $f.Controls.Add((New-ThemedLabel 'שעת הנעילה:' 30 128 120 32 10.5 $script:Theme.Muted $false 'MiddleRight'))
     $dl.Time = New-Object System.Windows.Forms.DateTimePicker
     $dl.Time.Format = 'Custom'; $dl.Time.CustomFormat = 'HH:mm'; $dl.Time.ShowUpDown = $true
     $dl.Time.Font = New-Object System.Drawing.Font('Segoe UI', 12)
@@ -269,7 +269,7 @@ function New-DailyLockForm {
     $f.Controls.Add($dl.Time)
     $pw = Add-Field $f 'סיסמה לאישור השינוי' 176 $true
     $dl.Pw = $pw.Box
-    $dl.Msg = New-ThemedLabel '' 20 246 340 24 9.5 $script:T.Danger
+    $dl.Msg = New-ThemedLabel '' 20 246 340 24 9.5 $script:Theme.Danger
     $f.Controls.Add($dl.Msg)
     $dl.Save = New-ThemedButton 'שמור' 195 290 165 46 'primary'
     $cn = New-ThemedButton 'ביטול' 20 290 165 46 'ghost'

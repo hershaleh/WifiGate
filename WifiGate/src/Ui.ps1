@@ -6,7 +6,7 @@ Add-Type -AssemblyName System.Drawing
 
 function Rgb([int]$r, [int]$g, [int]$b) { return [System.Drawing.Color]::FromArgb($r, $g, $b) }
 
-$script:T = @{
+$script:Theme = @{
     Bg          = (Rgb 15 23 42)
     Card        = (Rgb 30 41 59)
     CardHover   = (Rgb 51 65 85)
@@ -65,7 +65,7 @@ function New-ThemedForm([string]$Title, [int]$W, [int]$H) {
     $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.ShowIcon = $false
     $f.TopMost = $true
     $f.ClientSize = New-Object System.Drawing.Size($W, $H)
-    $f.BackColor = $script:T.Bg; $f.ForeColor = $script:T.Text
+    $f.BackColor = $script:Theme.Bg; $f.ForeColor = $script:Theme.Text
     $f.Font = New-Object System.Drawing.Font('Segoe UI', 10)
     Enable-DarkTitle $f
     return $f
@@ -78,15 +78,15 @@ function New-ThemedLabel([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H, [dou
     $style = [System.Drawing.FontStyle]::Regular
     if ($Bold) { $style = [System.Drawing.FontStyle]::Bold }
     $l.Font = New-Object System.Drawing.Font('Segoe UI', [single]$Size, $style)
-    if ($Color) { $l.ForeColor = $Color } else { $l.ForeColor = $script:T.Text }
+    if ($Color) { $l.ForeColor = $Color } else { $l.ForeColor = $script:Theme.Text }
     return $l
 }
 
 function New-LinkLabel([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H) {
-    $l = New-ThemedLabel $Text $X $Y $W $H 10 $script:T.Muted
+    $l = New-ThemedLabel $Text $X $Y $W $H 10 $script:Theme.Muted
     $l.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $l.Add_MouseEnter({ param($s, $e) $s.ForeColor = $script:T.Accent })
-    $l.Add_MouseLeave({ param($s, $e) $s.ForeColor = $script:T.Muted })
+    $l.Add_MouseEnter({ param($s, $e) $s.ForeColor = $script:Theme.Accent })
+    $l.Add_MouseLeave({ param($s, $e) $s.ForeColor = $script:Theme.Muted })
     return $l
 }
 
@@ -97,9 +97,9 @@ function New-ThemedButton([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H, [st
     $b.Cursor = [System.Windows.Forms.Cursors]::Hand
     $b.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
     switch ($Kind) {
-        'primary' { $base = $script:T.Accent;   $hover = $script:T.AccentHover; $fg = $script:T.AccentText }
-        'danger'  { $base = $script:T.Danger;   $hover = $script:T.DangerHover; $fg = $script:T.DangerText }
-        default   { $base = $script:T.Card;     $hover = $script:T.CardHover;   $fg = $script:T.Text }
+        'primary' { $base = $script:Theme.Accent;   $hover = $script:Theme.AccentHover; $fg = $script:Theme.AccentText }
+        'danger'  { $base = $script:Theme.Danger;   $hover = $script:Theme.DangerHover; $fg = $script:Theme.DangerText }
+        default   { $base = $script:Theme.Card;     $hover = $script:Theme.CardHover;   $fg = $script:Theme.Text }
     }
     $b.BackColor = $base; $b.ForeColor = $fg
     $b.FlatAppearance.MouseOverBackColor = $hover
@@ -113,10 +113,10 @@ function New-ThemedButton([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H, [st
 function New-ThemedInput([int]$X, [int]$Y, [int]$W, [bool]$Secret = $true) {
     $H = 46
     $p = New-Object System.Windows.Forms.Panel
-    $p.SetBounds($X, $Y, $W, $H); $p.BackColor = $script:T.Bg
+    $p.SetBounds($X, $Y, $W, $H); $p.BackColor = $script:Theme.Bg
     Set-DoubleBuffered $p
     $tb = New-Object System.Windows.Forms.TextBox
-    $tb.BorderStyle = 'None'; $tb.BackColor = $script:T.Card; $tb.ForeColor = $script:T.Text
+    $tb.BorderStyle = 'None'; $tb.BackColor = $script:Theme.Card; $tb.ForeColor = $script:Theme.Text
     $tb.Font = New-Object System.Drawing.Font('Segoe UI', 12)
     $tb.RightToLeft = 'No'; $tb.UseSystemPasswordChar = $Secret
     $tb.SetBounds(16, [int](($H - $tb.Height) / 2), ($W - 32), $tb.Height)
@@ -126,10 +126,10 @@ function New-ThemedInput([int]$X, [int]$Y, [int]$W, [bool]$Secret = $true) {
         param($s, $e)
         $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
         $path = Get-RoundPath 1 1 ($s.Width - 3) ($s.Height - 3) 10
-        $fill = New-Object System.Drawing.SolidBrush($script:T.Card)
+        $fill = New-Object System.Drawing.SolidBrush($script:Theme.Card)
         $g.FillPath($fill, $path)
-        $col = $script:T.Border
-        if ($s.Tag.Focused) { $col = $script:T.Accent }
+        $col = $script:Theme.Border
+        if ($s.Tag.Focused) { $col = $script:Theme.Accent }
         $pen = New-Object System.Drawing.Pen($col, [single]1.6)
         $g.DrawPath($pen, $path)
         $fill.Dispose(); $pen.Dispose(); $path.Dispose()
@@ -141,7 +141,7 @@ function New-ThemedInput([int]$X, [int]$Y, [int]$W, [bool]$Secret = $true) {
 }
 
 function Add-Field($Form, [string]$Caption, [int]$Y, [bool]$Secret = $true) {
-    $Form.Controls.Add((New-ThemedLabel $Caption 28 $Y 324 20 9.5 $script:T.Muted $false 'MiddleRight'))
+    $Form.Controls.Add((New-ThemedLabel $Caption 28 $Y 324 20 9.5 $script:Theme.Muted $false 'MiddleRight'))
     $in = New-ThemedInput 20 ($Y + 22) 340 $Secret
     $Form.Controls.Add($in.Panel)
     return $in
@@ -165,7 +165,7 @@ function Show-Message {
 function New-SecretDialogForm([string]$Prompt, [string]$Title = 'WifiGate') {
     $f = New-ThemedForm $Title 380 214
     $script:sd = @{ Form = $f }
-    $f.Controls.Add((New-ThemedLabel $Prompt 20 16 340 46 10.5 $script:T.Text))
+    $f.Controls.Add((New-ThemedLabel $Prompt 20 16 340 46 10.5 $script:Theme.Text))
     $in = New-ThemedInput 20 70 340 $true
     $f.Controls.Add($in.Panel)
     $ok = New-ThemedButton 'אישור' 195 138 165 44 'primary'
@@ -191,16 +191,16 @@ function Read-SecretDialog {
 # Shows the one-time recovery code in a clear, large form. Returns $true when the user confirmed writing it down.
 function New-CodeDialogForm([string]$Code) {
     $f = New-ThemedForm 'WifiGate - קוד שחזור' 440 340
-    $f.Controls.Add((New-ThemedLabel 'קוד השחזור שלכם' 20 18 400 34 17 $script:T.Text $true))
+    $f.Controls.Add((New-ThemedLabel 'קוד השחזור שלכם' 20 18 400 34 17 $script:Theme.Text $true))
     $card = New-Object System.Windows.Forms.Panel
-    $card.SetBounds(30, 66, 380, 84); $card.BackColor = $script:T.Card
+    $card.SetBounds(30, 66, 380, 84); $card.BackColor = $script:Theme.Card
     Set-Rounded $card 14
-    $lbl = New-ThemedLabel $Code 0 0 380 84 20 $script:T.Accent $true
+    $lbl = New-ThemedLabel $Code 0 0 380 84 20 $script:Theme.Accent $true
     $lbl.Font = New-Object System.Drawing.Font('Consolas', 20, [System.Drawing.FontStyle]::Bold)
     $lbl.RightToLeft = 'No'
     $card.Controls.Add($lbl)
     $f.Controls.Add($card)
-    $f.Controls.Add((New-ThemedLabel "רשמו אותו על נייר ושמרו במקום בטוח.`nהוא פותח את ה-Wi-Fi אם שכחתם את הסיסמה או אם החלון נכשל.`nהוא לא יוצג שוב." 30 164 380 76 10 $script:T.Muted))
+    $f.Controls.Add((New-ThemedLabel "רשמו אותו על נייר ושמרו במקום בטוח.`nהוא פותח את ה-Wi-Fi אם שכחתם את הסיסמה או אם החלון נכשל.`nהוא לא יוצג שוב." 30 164 380 76 10 $script:Theme.Muted))
     $ok = New-ThemedButton 'רשמתי, המשך' 225 262 185 46 'primary'
     $cn = New-ThemedButton 'ביטול' 30 262 185 46 'ghost'
     $ok.DialogResult = 'OK'; $cn.DialogResult = 'Cancel'
@@ -222,7 +222,7 @@ function Show-Report {
     $t = New-Object System.Windows.Forms.TextBox
     $t.Multiline = $true; $t.ReadOnly = $true; $t.ScrollBars = 'Vertical'; $t.BorderStyle = 'None'
     $t.Dock = 'Fill'; $t.Font = New-Object System.Drawing.Font('Segoe UI', 10.5)
-    $t.BackColor = $script:T.Card; $t.ForeColor = $script:T.Text
+    $t.BackColor = $script:Theme.Card; $t.ForeColor = $script:Theme.Text
     $t.Text = $Text
     $f.Padding = New-Object System.Windows.Forms.Padding(14)
     $f.Controls.Add($t)
