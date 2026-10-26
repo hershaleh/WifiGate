@@ -89,6 +89,25 @@ try {
     Check 'throttle after 5 failures' ((-not $t.Ok) -and $t.Message -match 'ניסיונות') $t.Message
     Write-Json $script:ThrottleFile ([pscustomobject]@{ Fails = 0; Until = '' })
 
+    # installer shortcut helper (Hebrew folder + Hebrew name, hotkey, run-as-admin flag)
+    $tk = $null; $te = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'WifiGate\Install.ps1'), [ref]$tk, [ref]$te)
+    $fn = $ast.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and ($n.Name -eq 'New-GateShortcut') }, $true)
+    Invoke-Expression $fn.Extent.Text
+    $savedProg = $script:ProgDir
+    $script:ProgDir = Join-Path $env:RUNNER_TEMP 'progdir'
+    New-Item -ItemType Directory -Force $script:ProgDir | Out-Null
+    $heb = Join-Path $env:RUNNER_TEMP ([string][char]0x05E7 + [char]0x05D9 + [char]0x05E6 + [char]0x05D5 + [char]0x05E8)
+    New-GateShortcut $heb 'System Console' 'Console.ps1' 'imageres.dll,11' '' $false
+    New-GateShortcut $heb ([string][char]0x05E4 + [char]0x05EA + [char]0x05D9 + [char]0x05D7 + [char]0x05D4) 'Unlock-UI.ps1' 'shell32.dll,44' 'CTRL+ALT+P'
+    $l1 = [IO.File]::ReadAllBytes((Join-Path $heb 'System Console.lnk'))
+    $l2 = [IO.File]::ReadAllBytes((Join-Path $heb (([string][char]0x05E4 + [char]0x05EA + [char]0x05D9 + [char]0x05D7 + [char]0x05D4) + '.lnk')))
+    Check 'shortcut created in Hebrew folder' ($l1.Length -gt 100)
+    Check 'shortcut has run-as-admin flag' (($l1[0x15] -band 0x20) -eq 0x20)
+    Check 'hotkey Ctrl+Alt+P stored' (($l2[0x40] -eq 0x50) -and ($l2[0x41] -eq 0x06)) ("{0:X2} {1:X2}" -f $l2[0x40], $l2[0x41])
+    Check 'no temp lnk left behind' (@(Get-ChildItem $script:ProgDir -Filter 'tmp-*.lnk').Count -eq 0)
+    $script:ProgDir = $savedProg
+
     # console menu (choice Q = just show the menu and exit)
     $menuOut = (& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'WifiGate\src\Console.ps1') -Choice Q 2>&1 | Out-String)
     Check 'console menu lists 1-4' (($menuOut -match '\[1\] Open') -and ($menuOut -match '\[2\] Close') -and ($menuOut -match '\[3\] Check') -and ($menuOut -match '\[4\] Restore')) $menuOut
@@ -116,7 +135,7 @@ try {
     Shot (New-MainForm) 'main-open'
     Shot (New-ChangePasswordForm) 'change-password'
     Shot (New-AutoLockForm) 'auto-lock'
-    [void](Invoke-SaveAutoLockSettings 'OldPass123' $true 300 $true '23:30')
+    [void](Invoke-SaveAutoLockSettings 'ThirdPass789' $true 300 $true '23:30')
     Set-State 'locked'
     Shot (New-MainForm) 'main-locked-default5h'
     Shot (New-AutoLockForm) 'auto-lock-saved'

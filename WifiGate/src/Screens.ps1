@@ -286,7 +286,7 @@ function Add-Stepper($Form, [string]$Name, [int]$Y) {
 function New-AutoLockForm {
     $al = @{}
     $script:al = $al
-    $f = New-ThemedForm 'WifiGate - נעילה אוטומטית' 380 540
+    $f = New-ThemedForm 'WifiGate - נעילה אוטומטית' 380 548
     $al.Form = $f
     $f.Controls.Add((New-ThemedLabel 'נעילה אוטומטית' 20 12 340 34 16 $script:Theme.Text $true))
 
@@ -308,12 +308,12 @@ function New-AutoLockForm {
     $al.Day = Add-Stepper $f 'Day' 252
     $al.Day.Hour = 23
 
-    $pw = Add-Field $f 'סיסמה לאישור השינוי' 350 $true
+    $pw = Add-Field $f 'סיסמה לאישור השינוי' 364 $true
     $al.Pw = $pw.Box
-    $al.Msg = New-ThemedLabel '' 20 418 340 22 9.5 $script:Theme.Danger
+    $al.Msg = New-ThemedLabel '' 20 438 340 22 9.5 $script:Theme.Danger
     $f.Controls.Add($al.Msg)
-    $al.Save = New-ThemedButton 'שמור' 195 466 165 46 'primary'
-    $cn = New-ThemedButton 'ביטול' 20 466 165 46 'ghost'
+    $al.Save = New-ThemedButton 'שמור' 195 478 165 46 'primary'
+    $cn = New-ThemedButton 'ביטול' 20 478 165 46 'ghost'
     $cn.DialogResult = 'Cancel'
     $f.Controls.Add($al.Save); $f.Controls.Add($cn)
     $f.AcceptButton = $al.Save; $f.CancelButton = $cn
