@@ -17,21 +17,22 @@ if (-not (Test-IsAdmin)) {
 
 function Stop-Install([string]$Text) { [void](Show-Message $Text 'WifiGate - התקנה' 'OK' 'Warning'); exit 1 }
 
-function New-GateShortcut([string]$Name, [string]$ScriptName, [string]$Icon, [string]$Hotkey = '') {
-    # WScript.Shell is ANSI-only: it cannot save to a path containing Hebrew (user profile / shortcut name).
-    # So: build the .lnk at an ASCII-only path, then move it to the Desktop with .NET (Unicode-safe).
-    $desk = [Environment]::GetFolderPath('Desktop')
-    $final = Join-Path $desk ($Name + '.lnk')
+# Creates a .lnk with the "Run as administrator" flag. WScript.Shell is ANSI-only (breaks on Hebrew paths),
+# so the .lnk is built at an ASCII-only path and then written to its final place with .NET.
+function New-GateShortcut([string]$Folder, [string]$Name, [string]$ScriptName, [string]$Icon, [string]$Hotkey = '', [bool]$Hidden = $true) {
+    [void][IO.Directory]::CreateDirectory($Folder)
+    $final = Join-Path $Folder ($Name + '.lnk')
     $tmp = Join-Path $script:ProgDir ('tmp-' + [guid]::NewGuid().ToString('N') + '.lnk')
     $sh = New-Object -ComObject WScript.Shell
     $s = $sh.CreateShortcut($tmp)
     $s.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $s.Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + (Join-Path $script:ProgDir $ScriptName) + '"'
+    $win = ''; if ($Hidden) { $win = '-WindowStyle Hidden ' }
+    $s.Arguments = '-NoProfile -ExecutionPolicy Bypass ' + $win + '-File "' + (Join-Path $script:ProgDir $ScriptName) + '"'
     $s.WorkingDirectory = $script:ProgDir
     $s.IconLocation = $Icon
     if ($Hotkey) { $s.Hotkey = $Hotkey }
     $s.Save()
-    $bytes = [IO.File]::ReadAllBytes($tmp)       # "Run as administrator" flag
+    $bytes = [IO.File]::ReadAllBytes($tmp)
     $bytes[0x15] = $bytes[0x15] -bor 0x20
     [IO.File]::WriteAllBytes($final, $bytes)
     [IO.File]::Delete($tmp)
@@ -42,7 +43,7 @@ try {
 if ((Test-Path $script:StateFile) -or (Test-Path $script:ProgDir)) {
     $complete = [bool](Get-ScheduledTask -TaskName 'WifiGate-Boot' -ErrorAction SilentlyContinue)
     if ($complete) {
-        Stop-Install "WifiGate כבר מותקן.`n`nהשתמשו בקיצור 'WifiGate - שחזור' בשולחן העבודה, ובחרו הסרה, ואז הריצו את ההתקנה שוב."
+        Stop-Install "WifiGate כבר מותקן.`n`nפתחו את הקובץ System Console בשולחן העבודה, לחצו 4 ובחרו הסרה, ואז הריצו את ההתקנה שוב."
     }
     Invoke-Uninstall    # leftovers of an incomplete/failed earlier install: clean them silently
 }
@@ -101,12 +102,12 @@ $plan = @"
 3. שני כללי חומת אש (Windows Firewall) החוסמים תעבורה נכנסת ויוצאת במתאם ה-Wi-Fi בלבד. אם חומת האש כבויה - היא תופעל.
 4. כיבוי מתאם ה-Wi-Fi בזמן חסימה.
 5. שתי משימות מתוזמנות (חשבון SYSTEM): נעילה באתחול ובהתחברות, ותיקון החסימה כל דקה.
-6. ארבעה קיצורי דרך בשולחן העבודה: פתיחה (Ctrl+Alt+P), נעילה (Ctrl+Alt+X), שחזור, בדיקות. בחלון הפתיחה אפשר גם לקבוע נעילה אוטומטית, לשנות סיסמה ולהגדיר נעילה יומית.
+6. קובץ אחד בשולחן העבודה בשם 'System Console': חלון טרמינל עם תפריט באנגלית (1 פתיחה, 2 נעילה, 3 בדיקות, 4 שחזור). בנוסף שני קיצורי מקשים בתפריט התחל: Ctrl+Alt+P לפתיחה ו-Ctrl+Alt+X לנעילה.
 
 לא ישונה: Ethernet ושאר מתאמי הרשת, וחשבון המשתמש שלכם.
 
 לפני הפעלת החסימה תתבצע בדיקה עצמית אוטומטית של הנעילה, הפתיחה והשחזור (כמה שניות, ה-Wi-Fi יתנתק ויחזור).
-ביטול בכל עת: קיצור 'שחזור' (סיסמה או קוד שחזור).
+ביטול בכל עת: ב-System Console לוחצים 4 (סיסמה או קוד שחזור).
 
 להמשיך?
 "@
@@ -143,10 +144,11 @@ Set-State 'unlocked'
 Write-Json $script:SnapshotFile (@(Get-NetAdapter | Where-Object { $_.InterfaceGuid -ne $WifiGuid } |
     ForEach-Object { [pscustomobject]@{ Name = $_.Name; Guid = $_.InterfaceGuid; Status = [string]$_.Status } }))
 
-New-GateShortcut 'WifiGate - פתיחת Wi-Fi' 'Unlock-UI.ps1' 'shell32.dll,44' 'CTRL+ALT+P'
-New-GateShortcut 'WifiGate - נעילת Wi-Fi' 'Lock.ps1'      'shell32.dll,47' 'CTRL+ALT+X'
-New-GateShortcut 'WifiGate - שחזור'       'Recovery.ps1'  'shell32.dll,238'
-New-GateShortcut 'WifiGate - בדיקות'      'Tests.ps1'     'shell32.dll,23'
+# One visible file on the Desktop (a terminal menu 1-4). The two hotkeys live in the Start menu.
+New-GateShortcut ([Environment]::GetFolderPath('Desktop')) $script:DeskName 'Console.ps1' 'imageres.dll,11' '' $false
+$hk = Join-Path ([Environment]::GetFolderPath('Programs')) $script:StartFolder
+New-GateShortcut $hk 'Open'  'Unlock-UI.ps1' 'shell32.dll,44' 'CTRL+ALT+P'
+New-GateShortcut $hk 'Close' 'Lock.ps1'      'shell32.dll,47' 'CTRL+ALT+X'
 
 # ---- 5. self-test with automatic failsafe ----
 $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -184,7 +186,7 @@ if ($fail) {
 }
 
 # ---- 6. final confirmation, then activate ----
-$go = Show-Message "הבדיקה העצמית עברה: נעילה, פתיחה בסיסמה ושחזור בקוד עובדים.`n`nלהפעיל את החסימה עכשיו? ה-Wi-Fi ייחסם עד שתזינו סיסמה בקיצור 'WifiGate - פתיחת Wi-Fi'." 'WifiGate' 'YesNo' 'Question'
+$go = Show-Message "הבדיקה העצמית עברה: נעילה, פתיחה בסיסמה ושחזור בקוד עובדים.`n`nלהפעיל את החסימה עכשיו? ה-Wi-Fi ייחסם עד שתזינו סיסמה (System Console, ואז 1)." 'WifiGate' 'YesNo' 'Question'
 if ($go -ne 'Yes') {
     Invoke-Uninstall
     [void](Show-Message 'החסימה לא הופעלה, והתוכנה הוסרה. אפשר להריץ את ההתקנה שוב בכל עת.' 'WifiGate' 'OK' 'Information')
@@ -192,7 +194,7 @@ if ($go -ne 'Yes') {
 }
 Register-WifiGateTasks
 Invoke-Lock
-[void](Show-Message "החסימה פעילה.`n`nלפתיחה: קיצור 'WifiGate - פתיחת Wi-Fi' בשולחן העבודה.`nמומלץ להריץ את 'WifiGate - בדיקות' ולפעול לפי ה-README." 'WifiGate' 'OK' 'Information')
+[void](Show-Message "החסימה פעילה.`n`nלפתיחה: הקובץ System Console בשולחן העבודה, ואז 1 (או Ctrl+Alt+P).`nמומלץ להריץ בדיקות (3) ולפעול לפי ה-README." 'WifiGate' 'OK' 'Information')
 } catch {
     $msg = $_.Exception.Message + "`n`n" + $_.InvocationInfo.PositionMessage
     try { Invoke-Uninstall } catch { }

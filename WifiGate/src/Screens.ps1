@@ -13,6 +13,12 @@ function Format-Remaining([timespan]$Left) {
     return "$m דקות"
 }
 
+function Format-ShortDuration([int]$Minutes) {
+    if ($Minutes -lt 60) { return "$Minutes ד׳" }
+    if ($Minutes % 60 -eq 0) { return ("{0} ש׳" -f ($Minutes / 60)) }
+    return ('{0}:{1:00} ש׳' -f [math]::Floor($Minutes / 60), ($Minutes % 60))
+}
+
 function Set-MainMessage([string]$Text, [string]$Kind = 'muted') {
     $ui = $script:ui
     $ui.Msg.Text = $Text
@@ -70,7 +76,7 @@ function Invoke-MainUnlock {
     Set-MainMessage 'בודק...' 'muted'; $ui.Form.Refresh()
     $ui.Input.Box.Clear()
     try {
-        $mins = [int]$script:AutoOptions[$ui.ChipsLocked.Tag.Index].Min
+        $mins = [int]$ui.LockedOptions[$ui.ChipsLocked.Tag.Index].Min
         $r = Invoke-Unlock $pw $mins
         if ($r.Ok) {
             try { Set-ConfigValue 'LastAutoMinutes' $mins } catch { }
@@ -161,7 +167,12 @@ function New-MainForm {
     # --- locked view ---
     $ui.Input = New-ThemedInput 30 232 340 $true
     $lblDur = New-ThemedLabel 'אחרי הפתיחה, נעל שוב אוטומטית:' 30 290 340 20 9.5 $script:Theme.Muted
-    $ui.ChipsLocked = New-ChipRow 30 314 340 34 @($script:AutoOptions | ForEach-Object { $_.Text })
+    # first chip: the "after every unlock" default if configured, otherwise "none"
+    $defMin = Get-DefaultAutoMinutes
+    $first = @{ Text = 'ללא'; Min = 0 }
+    if ($defMin -gt 0) { $first = @{ Text = (Format-ShortDuration $defMin); Min = $defMin } }
+    $ui.LockedOptions = @($first) + @($script:AutoOptions | Select-Object -Skip 1)
+    $ui.ChipsLocked = New-ChipRow 30 314 340 34 @($ui.LockedOptions | ForEach-Object { $_.Text })
     $ui.BtnUnlock = New-ThemedButton 'פתח Wi-Fi' 30 362 340 50 'primary'
     $ui.LockedGroup = @($ui.Input.Panel, $lblDur, $ui.ChipsLocked, $ui.BtnUnlock)
 
@@ -175,7 +186,7 @@ function New-MainForm {
 
     $ui.Msg = New-ThemedLabel '' 20 418 360 24 9.5 $script:Theme.Muted
     $ui.LinkPw = New-LinkLabel 'שינוי סיסמה' 40 450 150 24
-    $ui.LinkDaily = New-LinkLabel 'נעילה יומית' 210 450 150 24
+    $ui.LinkDaily = New-LinkLabel 'נעילה אוטומטית' 210 450 150 24
 
     foreach ($c in @($ui.Icon, $ui.Status, $ui.Sub) + $ui.LockedGroup + $ui.OpenGroup + @($ui.BtnCancelTimer, $ui.Msg, $ui.LinkPw, $ui.LinkDaily)) { $f.Controls.Add($c) }
     $f.AcceptButton = $ui.BtnUnlock
@@ -184,7 +195,9 @@ function New-MainForm {
     try {
         $cfg = Read-Json $script:ConfigFile
         $last = [int](Get-Prop $cfg 'LastAutoMinutes' 0)
-        for ($i = 0; $i -lt $script:AutoOptions.Count; $i++) { if ($script:AutoOptions[$i].Min -eq $last) { Select-Chip $ui.ChipsLocked $i } }
+        if ($defMin -le 0) {
+            for ($i = 0; $i -lt $ui.LockedOptions.Count; $i++) { if ($ui.LockedOptions[$i].Min -eq $last) { Select-Chip $ui.ChipsLocked $i } }
+        }
     } catch { }
 
     $ui.BtnUnlock.Add_Click({ Invoke-MainUnlock })
@@ -192,7 +205,7 @@ function New-MainForm {
     $ui.BtnSetTimer.Add_Click({ Invoke-MainSetTimer })
     $ui.BtnCancelTimer.Add_Click({ Invoke-MainCancelTimer })
     $ui.LinkPw.Add_Click({ if (Show-ChangePasswordDialog) { Set-MainMessage 'הסיסמה שונתה.' 'ok' } })
-    $ui.LinkDaily.Add_Click({ if (Show-DailyLockDialog) { Set-MainMessage 'ההגדרה נשמרה.' 'ok' } })
+    $ui.LinkDaily.Add_Click({ if (Show-AutoLockDialog) { Set-MainMessage 'ההגדרות נשמרו.' 'ok' } })
 
     $ui.Timer = New-Object System.Windows.Forms.Timer
     $ui.Timer.Interval = 1000
@@ -241,66 +254,102 @@ function Show-ChangePasswordDialog {
     return ([string]$res -eq 'OK')
 }
 
-# ---------- daily lock ----------
+# ---------- auto-lock settings (after every unlock + daily time) ----------
 
-function Update-DailyTime { $dl = $script:dl; $dl.TimeLbl.Text = ('{0:00}:{1:00}' -f $dl.Hour, $dl.Min) }
+function Update-Stepper($St) { $St.Lbl.Text = ('{0:00}:{1:00}' -f $St.Hour, $St.Min) }
 
-function New-DailyLockForm {
-    $dl = @{ Hour = 23; Min = 0 }
-    $script:dl = $dl
-    $f = New-ThemedForm 'WifiGate - נעילה יומית' 380 430
-    $dl.Form = $f
-    $f.Controls.Add((New-ThemedLabel 'נעילה יומית אוטומטית' 20 14 340 34 16 $script:Theme.Text $true))
-    $f.Controls.Add((New-ThemedLabel 'כל יום בשעה שתבחרו, הגלישה תיחסם אם היא פתוחה.' 20 50 340 24 9.5 $script:Theme.Muted))
-    $dl.Enable = New-Object System.Windows.Forms.CheckBox
-    $dl.Enable.Text = 'הפעל נעילה יומית'; $dl.Enable.SetBounds(30, 88, 320, 30)
-    $dl.Enable.Font = New-Object System.Drawing.Font('Segoe UI', 11); $dl.Enable.ForeColor = $script:Theme.Text
-    $dl.Enable.BackColor = [System.Drawing.Color]::Transparent
-    $f.Controls.Add($dl.Enable)
+function Step-Time($Info) {
+    $st = $script:al[$Info.Name]
+    if ($Info.Part -eq 'H') { $st.Hour = ($st.Hour + 24 + $Info.Dir) % 24 }
+    else { $st.Min = ($st.Min + 60 + $Info.Dir * 5) % 60 }
+    Update-Stepper $st
+}
 
-    $f.Controls.Add((New-ThemedLabel 'שעת הנעילה' 20 126 340 20 9.5 $script:Theme.Muted))
-    $dl.TimeLbl = New-ThemedLabel '23:00' 100 168 180 50 28 $script:Theme.Accent $true
-    $dl.TimeLbl.Font = New-Object System.Drawing.Font('Consolas', 28, [System.Drawing.FontStyle]::Bold)
-    $dl.TimeLbl.RightToLeft = 'No'
-    $f.Controls.Add($dl.TimeLbl)
-    $dl.HUp = New-ThemedButton '+' 112 140 56 28 'ghost'; $dl.HDn = New-ThemedButton '-' 112 220 56 28 'ghost'
-    $dl.MUp = New-ThemedButton '+' 212 140 56 28 'ghost'; $dl.MDn = New-ThemedButton '-' 212 220 56 28 'ghost'
-    foreach ($b in @($dl.HUp, $dl.HDn, $dl.MUp, $dl.MDn)) { $f.Controls.Add($b) }
-    $dl.HUp.Add_Click({ $d = $script:dl; $d.Hour = ($d.Hour + 1) % 24; Update-DailyTime })
-    $dl.HDn.Add_Click({ $d = $script:dl; $d.Hour = ($d.Hour + 23) % 24; Update-DailyTime })
-    $dl.MUp.Add_Click({ $d = $script:dl; $d.Min = ($d.Min + 5) % 60; Update-DailyTime })
-    $dl.MDn.Add_Click({ $d = $script:dl; $d.Min = ($d.Min + 55) % 60; Update-DailyTime })
+# Adds "+ / HH:MM / -" controls; returns the stepper state (Hour, Min, Lbl).
+function Add-Stepper($Form, [string]$Name, [int]$Y) {
+    $st = @{ Hour = 0; Min = 0 }
+    $st.Lbl = New-ThemedLabel '00:00' 100 ($Y + 26) 180 44 26 $script:Theme.Accent $true
+    $st.Lbl.Font = New-Object System.Drawing.Font('Consolas', 26, [System.Drawing.FontStyle]::Bold)
+    $st.Lbl.RightToLeft = 'No'
+    $Form.Controls.Add($st.Lbl)
+    $defs = @(@('H', 1, 112, $Y), @('H', -1, 112, ($Y + 72)), @('M', 1, 212, $Y), @('M', -1, 212, ($Y + 72)))
+    foreach ($d in $defs) {
+        $txt = '+'; if ($d[1] -lt 0) { $txt = '-' }
+        $b = New-ThemedButton $txt $d[2] $d[3] 56 26 'ghost'
+        $b.Tag = @{ Name = $Name; Part = $d[0]; Dir = $d[1] }
+        $b.Add_Click({ param($s, $e) Step-Time $s.Tag })
+        $Form.Controls.Add($b)
+    }
+    return $st
+}
 
-    $pw = Add-Field $f 'סיסמה לאישור השינוי' 262 $true
-    $dl.Pw = $pw.Box
-    $dl.Msg = New-ThemedLabel '' 20 332 340 22 9.5 $script:Theme.Danger
-    $f.Controls.Add($dl.Msg)
-    $dl.Save = New-ThemedButton 'שמור' 195 366 165 46 'primary'
-    $cn = New-ThemedButton 'ביטול' 20 366 165 46 'ghost'
+function New-AutoLockForm {
+    $al = @{}
+    $script:al = $al
+    $f = New-ThemedForm 'WifiGate - נעילה אוטומטית' 380 540
+    $al.Form = $f
+    $f.Controls.Add((New-ThemedLabel 'נעילה אוטומטית' 20 12 340 34 16 $script:Theme.Text $true))
+
+    # 1. after every unlock
+    $al.DefEnable = New-Object System.Windows.Forms.CheckBox
+    $al.DefEnable.Text = 'נעל אוטומטית אחרי כל פתיחה (משך: שעות:דקות)'; $al.DefEnable.SetBounds(26, 52, 330, 30)
+    $al.DefEnable.Font = New-Object System.Drawing.Font('Segoe UI', 10.5); $al.DefEnable.ForeColor = $script:Theme.Text
+    $al.DefEnable.BackColor = [System.Drawing.Color]::Transparent
+    $f.Controls.Add($al.DefEnable)
+    $al.Def = Add-Stepper $f 'Def' 90
+    $al.Def.Hour = 5
+
+    # 2. every day at a fixed time
+    $al.DayEnable = New-Object System.Windows.Forms.CheckBox
+    $al.DayEnable.Text = 'נעל כל יום בשעה קבועה'; $al.DayEnable.SetBounds(26, 214, 330, 30)
+    $al.DayEnable.Font = New-Object System.Drawing.Font('Segoe UI', 10.5); $al.DayEnable.ForeColor = $script:Theme.Text
+    $al.DayEnable.BackColor = [System.Drawing.Color]::Transparent
+    $f.Controls.Add($al.DayEnable)
+    $al.Day = Add-Stepper $f 'Day' 252
+    $al.Day.Hour = 23
+
+    $pw = Add-Field $f 'סיסמה לאישור השינוי' 350 $true
+    $al.Pw = $pw.Box
+    $al.Msg = New-ThemedLabel '' 20 418 340 22 9.5 $script:Theme.Danger
+    $f.Controls.Add($al.Msg)
+    $al.Save = New-ThemedButton 'שמור' 195 466 165 46 'primary'
+    $cn = New-ThemedButton 'ביטול' 20 466 165 46 'ghost'
     $cn.DialogResult = 'Cancel'
-    $f.Controls.Add($dl.Save); $f.Controls.Add($cn)
-    $f.AcceptButton = $dl.Save; $f.CancelButton = $cn
+    $f.Controls.Add($al.Save); $f.Controls.Add($cn)
+    $f.AcceptButton = $al.Save; $f.CancelButton = $cn
+
     try {
         $cfg = Read-Json $script:ConfigFile
-        $cur = Get-Prop $cfg 'DailyLock' $null
-        $tm = '23:00'
-        if ($cur) { $dl.Enable.Checked = [bool](Get-Prop $cur 'Enabled' $false); $tm = [string](Get-Prop $cur 'Time' '23:00') }
-        $ts = [timespan]::Parse($tm)
-        $dl.Hour = [int]$ts.Hours; $dl.Min = [int]$ts.Minutes
+        $d = Get-Prop $cfg 'DefaultAutoLock' $null
+        if ($d) {
+            $al.DefEnable.Checked = [bool](Get-Prop $d 'Enabled' $false)
+            $m = [int](Get-Prop $d 'Minutes' 300)
+            if ($m -gt 0) { $al.Def.Hour = [int][math]::Floor($m / 60); $al.Def.Min = $m % 60 }
+        }
+        $dl = Get-Prop $cfg 'DailyLock' $null
+        if ($dl) {
+            $al.DayEnable.Checked = [bool](Get-Prop $dl 'Enabled' $false)
+            $ts = [timespan]::Parse([string](Get-Prop $dl 'Time' '23:00'))
+            $al.Day.Hour = [int]$ts.Hours; $al.Day.Min = [int]$ts.Minutes
+        }
     } catch { }
-    Update-DailyTime
-    $dl.Save.Add_Click({
-        $dl = $script:dl
-        $dl.Save.Enabled = $false; $dl.Msg.Text = ''; $dl.Form.Refresh()
-        try { $r = Invoke-SaveDailyLock $dl.Pw.Text $dl.Enable.Checked ('{0:00}:{1:00}' -f $dl.Hour, $dl.Min) } catch { Write-Log "daily lock error: $($_.Exception.Message)"; $r = New-Result $false 'אירעה שגיאה.' }
-        $dl.Save.Enabled = $true
-        if ($r.Ok) { $dl.Form.DialogResult = 'OK' } else { $dl.Msg.Text = $r.Message; $dl.Pw.Clear(); $dl.Pw.Focus() }
+    Update-Stepper $al.Def; Update-Stepper $al.Day
+
+    $al.Save.Add_Click({
+        $a = $script:al
+        $a.Save.Enabled = $false; $a.Msg.Text = ''; $a.Form.Refresh()
+        try {
+            $mins = [int]($a.Def.Hour * 60 + $a.Def.Min)
+            $r = Invoke-SaveAutoLockSettings $a.Pw.Text $a.DefEnable.Checked $mins $a.DayEnable.Checked ('{0:00}:{1:00}' -f $a.Day.Hour, $a.Day.Min)
+        } catch { Write-Log "auto-lock settings error: $($_.Exception.Message)"; $r = New-Result $false 'אירעה שגיאה.' }
+        $a.Save.Enabled = $true
+        if ($r.Ok) { $a.Form.DialogResult = 'OK' } else { $a.Msg.Text = $r.Message; $a.Pw.Clear(); $a.Pw.Focus() }
     })
     return $f
 }
 
-function Show-DailyLockDialog {
-    $f = New-DailyLockForm
+function Show-AutoLockDialog {
+    $f = New-AutoLockForm
     $res = $f.ShowDialog(); $f.Dispose()
     return ([string]$res -eq 'OK')
 }

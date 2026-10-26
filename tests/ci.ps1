@@ -43,20 +43,35 @@ try {
 
     # daily lock
     $past = (Get-Date).AddMinutes(-1).ToString('HH:mm')
-    Check 'daily lock save needs correct password' (-not (Invoke-SaveDailyLock 'bad' $true $past).Ok)
-    Check 'daily lock bad time rejected' (-not (Invoke-SaveDailyLock 'OldPass123' $true '25:99').Ok)
-    Check 'daily lock saved' (Invoke-SaveDailyLock 'OldPass123' $true $past).Ok
+    Check 'daily lock save needs correct password' (-not (Invoke-SaveAutoLockSettings 'bad' $false 0 $true $past).Ok)
+    Check 'daily lock bad time rejected' (-not (Invoke-SaveAutoLockSettings 'OldPass123' $false 0 $true '25:99').Ok)
+    Check 'daily lock saved' (Invoke-SaveAutoLockSettings 'OldPass123' $false 0 $true $past).Ok
     Write-Json $script:StateFile ([pscustomobject]@{ Mode = 'unlocked'; ChangedAt = (Get-Date).AddHours(-2).ToString('o'); AutoLockAt = '' })
     if ((Get-Date).Hour -eq 0 -and (Get-Date).Minute -eq 0) { L 'SKIP daily lock due (midnight edge)' }
     else { Check 'daily lock due (unlocked before lock time)' (Test-LockDue) }
     Set-State 'unlocked'
     Check 'daily lock not due (unlocked after lock time)' (-not (Test-LockDue))
-    [void](Invoke-SaveDailyLock 'OldPass123' $false $past)
+    [void](Invoke-SaveAutoLockSettings 'OldPass123' $false 0 $false $past)
     Write-Json $script:StateFile ([pscustomobject]@{ Mode = 'unlocked'; ChangedAt = (Get-Date).AddHours(-2).ToString('o'); AutoLockAt = '' })
     Check 'daily lock disabled -> not due' (-not (Test-LockDue))
     Check 'old state file without AutoLockAt works' $true
     Write-Json $script:StateFile ([pscustomobject]@{ Mode = 'unlocked'; ChangedAt = (Get-Date).ToString('o') })
     Check 'legacy state (no AutoLockAt) not due' (-not (Test-LockDue))
+
+    # "lock N hours after every unlock"
+    Check 'default auto-lock: too short refused' (-not (Invoke-SaveAutoLockSettings 'OldPass123' $true 2 $false '23:00').Ok)
+    Check 'default auto-lock: wrong password refused' (-not (Invoke-SaveAutoLockSettings 'bad' $true 300 $false '23:00').Ok)
+    Check 'default auto-lock: saved (5h)' (Invoke-SaveAutoLockSettings 'OldPass123' $true 300 $false '23:00').Ok
+    Check 'default minutes read back' ((Get-DefaultAutoMinutes) -eq 300)
+    [void](Invoke-Unlock 'OldPass123')
+    $inf = Get-StateInfo
+    Check 'unlock applies the default (about 5h)' ($inf.AutoLockAt -and (($inf.AutoLockAt - (Get-Date)).TotalMinutes -gt 295) -and (($inf.AutoLockAt - (Get-Date)).TotalMinutes -le 300))
+    [void](Invoke-Unlock 'OldPass123' 45)
+    Check 'explicit minutes override the default' ((($inf = Get-StateInfo).AutoLockAt - (Get-Date)).TotalMinutes -lt 46)
+    [void](Invoke-SaveAutoLockSettings 'OldPass123' $false 300 $false '23:00')
+    Check 'default disabled -> unlock without timer' ((Get-DefaultAutoMinutes) -eq 0)
+    [void](Invoke-Unlock 'OldPass123')
+    Check 'no timer when default disabled' ($null -eq (Get-StateInfo).AutoLockAt)
 
     # change password
     Check 'change: too short refused' (-not (Invoke-ChangePassword 'OldPass123' 'short').Ok)
@@ -73,6 +88,11 @@ try {
     $t = Invoke-Unlock 'ThirdPass789'
     Check 'throttle after 5 failures' ((-not $t.Ok) -and $t.Message -match 'ניסיונות') $t.Message
     Write-Json $script:ThrottleFile ([pscustomobject]@{ Fails = 0; Until = '' })
+
+    # console menu (choice Q = just show the menu and exit)
+    $menuOut = (& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'WifiGate\src\Console.ps1') -Choice Q 2>&1 | Out-String)
+    Check 'console menu lists 1-4' (($menuOut -match '\[1\] Open') -and ($menuOut -match '\[2\] Close') -and ($menuOut -match '\[3\] Check') -and ($menuOut -match '\[4\] Restore')) $menuOut
+    Check 'console menu has no revealing words' (-not ($menuOut -match '(?i)wifi|wi-fi|block|lock'))
 
     # ---- 3. screenshots ----
     New-Item -ItemType Directory -Force $ShotDir | Out-Null
@@ -95,7 +115,11 @@ try {
     Set-State 'unlocked'
     Shot (New-MainForm) 'main-open'
     Shot (New-ChangePasswordForm) 'change-password'
-    Shot (New-DailyLockForm) 'daily-lock'
+    Shot (New-AutoLockForm) 'auto-lock'
+    [void](Invoke-SaveAutoLockSettings 'OldPass123' $true 300 $true '23:30')
+    Set-State 'locked'
+    Shot (New-MainForm) 'main-locked-default5h'
+    Shot (New-AutoLockForm) 'auto-lock-saved'
     Shot (New-CodeDialogForm 'AB3D-EF4G-HJ5K-LM6N-PQ7R') 'recovery-code'
     Shot (New-SecretDialogForm 'שחזור: הזינו את הסיסמה או את קוד השחזור.') 'secret-dialog'
     L 'screenshots done'

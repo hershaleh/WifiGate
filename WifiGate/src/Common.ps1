@@ -15,6 +15,8 @@ $script:SnapshotFile = Join-Path $script:DataDir 'snapshot.json'
 $script:LogFile      = Join-Path $script:DataDir 'wifigate.log'
 $script:RuleGroup    = 'WifiGate'
 $script:Iterations   = 200000
+$script:DeskName     = 'System Console'     # the single Desktop shortcut
+$script:StartFolder  = 'System Console'     # Start-menu folder holding the two hotkey shortcuts
 
 # ---------- basics ----------
 
@@ -260,6 +262,7 @@ function Test-AuthSecret([string]$Secret, [bool]$AllowRecovery = $false) {
 function Invoke-Unlock([string]$Password, [int]$AutoLockMinutes = 0) {
     $a = Test-AuthSecret $Password $false
     if (-not $a.Ok) { return $a }
+    if ($AutoLockMinutes -le 0) { $AutoLockMinutes = Get-DefaultAutoMinutes }   # "lock N hours after every unlock" setting
     Clear-WifiBlock                 # remove rules + enable adapter
     $at = ''
     if ($AutoLockMinutes -gt 0) { $at = (Get-Date).AddMinutes($AutoLockMinutes).ToString('o') }
@@ -288,14 +291,29 @@ function Invoke-ChangePassword([string]$Current, [string]$New) {
     return (New-Result $true 'הסיסמה שונתה.')
 }
 
-function Invoke-SaveDailyLock([string]$Password, [bool]$Enabled, [string]$Time) {
+# Setting: "lock automatically N minutes after every unlock". Returns 0 when disabled.
+function Get-DefaultAutoMinutes {
+    try {
+        $cfg = Read-Json $script:ConfigFile
+        $d = Get-Prop $cfg 'DefaultAutoLock' $null
+        if ($d -and [bool](Get-Prop $d 'Enabled' $false)) { return [int](Get-Prop $d 'Minutes' 0) }
+    } catch { }
+    return 0
+}
+
+# Saves both auto-lock settings at once (needs the password / recovery code):
+#   DefaultEnabled/DefaultMinutes : lock N minutes after every unlock
+#   DailyEnabled/DailyTime        : lock every day at HH:mm
+function Invoke-SaveAutoLockSettings([string]$Password, [bool]$DefaultEnabled, [int]$DefaultMinutes, [bool]$DailyEnabled, [string]$DailyTime) {
     $ts = [timespan]::Zero
-    if (-not [timespan]::TryParse($Time, [ref]$ts) -or $ts.TotalHours -ge 24 -or $ts.TotalSeconds -lt 0) { return (New-Result $false 'שעה לא תקינה.') }
+    if (-not [timespan]::TryParse($DailyTime, [ref]$ts) -or $ts.TotalHours -ge 24 -or $ts.TotalSeconds -lt 0) { return (New-Result $false 'שעה לא תקינה.') }
+    if ($DefaultEnabled -and ($DefaultMinutes -lt 5 -or $DefaultMinutes -gt 1440)) { return (New-Result $false 'משך הנעילה חייב להיות בין 5 דקות ל-24 שעות.') }
     $a = Test-AuthSecret $Password $true
     if (-not $a.Ok) { return $a }
-    Set-ConfigValue 'DailyLock' ([pscustomobject]@{ Enabled = $Enabled; Time = $ts.ToString('hh\:mm') })
-    Write-Log "daily lock: enabled=$Enabled time=$Time"
-    return (New-Result $true 'ההגדרה נשמרה.')
+    Set-ConfigValue 'DefaultAutoLock' ([pscustomobject]@{ Enabled = $DefaultEnabled; Minutes = $DefaultMinutes })
+    Set-ConfigValue 'DailyLock' ([pscustomobject]@{ Enabled = $DailyEnabled; Time = $ts.ToString('hh\:mm') })
+    Write-Log "auto-lock settings: after-unlock=$DefaultEnabled/$DefaultMinutes daily=$DailyEnabled/$DailyTime"
+    return (New-Result $true 'ההגדרות נשמרו.')
 }
 
 # Used by the Tick task while unlocked: has the auto-lock time passed, or the daily lock time?
@@ -361,6 +379,8 @@ function Invoke-Uninstall {
     }
     $desk = [Environment]::GetFolderPath('Desktop')
     Get-ChildItem $desk -Filter 'WifiGate*.lnk' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $desk ($script:DeskName + '.lnk')) -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path ([Environment]::GetFolderPath('Programs')) $script:StartFolder) -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $script:DataDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $script:ProgDir -Recurse -Force -ErrorAction SilentlyContinue
 }
