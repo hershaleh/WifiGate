@@ -110,8 +110,10 @@ try {
 
     # console menu (choice Q = just show the menu and exit)
     $menuOut = (& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'WifiGate\src\Console.ps1') -Choice Q 2>&1 | Out-String)
-    Check 'console menu lists 1-4' (($menuOut -match '\[1\] Open') -and ($menuOut -match '\[2\] Close') -and ($menuOut -match '\[3\] Check') -and ($menuOut -match '\[4\] Restore')) $menuOut
-    Check 'console menu has no revealing words' (-not ($menuOut -match '(?i)wifi|wi-fi|block|lock'))
+    $lines = @($menuOut -split "`n" | Where-Object { $_.Trim() })
+    Check 'console prints filler lines' ($lines.Count -ge 9) ("lines=" + $lines.Count)
+    Check 'console shows no options or purpose' (-not ($menuOut -match '(?i)open|close|check|restore|exit|wifi|wi-fi|block|lock|\[1\]|menu'))
+    Check 'console filler contains English and Chinese' (($menuOut -match '[a-z]{4,}') -and ($menuOut -match '[\u4e00-\u9fff]'))
 
     # ---- 3. screenshots ----
     New-Item -ItemType Directory -Force $ShotDir | Out-Null
@@ -128,7 +130,9 @@ try {
         $Form.Close(); $Form.Dispose()
     }
     Set-State 'locked'
-    Shot (New-MainForm) 'main-locked'
+    $mf = New-MainForm
+    Check 'main window can be minimized' ($mf.MinimizeBox -and ($mf.FormBorderStyle -eq 'FixedSingle') -and $mf.ShowInTaskbar)
+    Shot $mf 'main-locked'
     Set-State 'unlocked' ((Get-Date).AddMinutes(37).ToString('o'))
     Shot (New-MainForm) 'main-open-timer'
     Set-State 'unlocked'

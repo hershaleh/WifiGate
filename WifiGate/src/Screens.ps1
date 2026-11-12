@@ -156,6 +156,8 @@ function New-MainForm {
     $script:ui = $ui
     $f = New-ThemedForm 'WifiGate' 400 486
     $ui.Form = $f
+    $f.FormBorderStyle = 'FixedSingle'     # FixedDialog has no minimize button
+    $f.MinimizeBox = $true; $f.MaximizeBox = $false; $f.ShowInTaskbar = $true
 
     $ui.Icon = New-Object System.Windows.Forms.Panel
     $ui.Icon.SetBounds(144, 22, 112, 112); $ui.Icon.BackColor = $script:Theme.Bg
