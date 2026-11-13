@@ -38,5 +38,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete latest --yes --cleanup-tag 2>$null
-          gh release create latest build\WifiGateSetup.exe --title "WifiGateSetup (latest)" --notes "Built from $env:GITHUB_SHA"
+          gh release view latest *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload latest build\WifiGateSetup.exe --clobber
+            if ($LASTEXITCODE -ne 0) { throw "upload failed" }
+            gh release edit latest --target $env:GITHUB_SHA --notes "Built from $env:GITHUB_SHA"
+          } else {
+            gh release create latest build\WifiGateSetup.exe --target $env:GITHUB_SHA --title "WifiGateSetup (latest)" --notes "Built from $env:GITHUB_SHA"
+            if ($LASTEXITCODE -ne 0) { throw "create failed" }
+          }
+
+      - name: Report build status to ci-build branch
+        if: always()
+        shell: pwsh
+        run: |
+          $tmp = Join-Path $env:RUNNER_TEMP 'status'
+          New-Item -ItemType Directory -Force $tmp | Out-Null
+          $exe = 'build\WifiGateSetup.exe'
+          $info = "sha=$env:GITHUB_SHA`\njob=${{ job.status }}`\n"
+          if (Test-Path $exe) { $info += "exe_bytes=$((Get-Item $exe).Length)`\nexe_sha256=$((Get-FileHash $exe).Hash)`\n" } else { $info += "exe=missing`\n" }
+          Set-Content -Path "$tmp\build-status.txt" -Value $info
+          git config user.name "ci"; git config user.email "ci@example.com"
+          git checkout --orphan ci-build
+          git rm -rf . | Out-Null
+          Copy-Item "$tmp\build-status.txt" .
+          git add -A
+          git commit -m "build status"
+          git push -f origin ci-build
