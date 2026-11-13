@@ -34,7 +34,7 @@ function Test-General {
         $n = @(Get-BlockRules).Count
         if ($n -eq 0) { Add-Res 'PASS' 'מצב פתוח: אין כללי חסימה (כמצופה).' } else { Add-Res 'FAIL' "מצב פתוח אבל נמצאו $n כללי חסימה." }
     } else {
-        if (Test-BlockRulesValid $a.Name) { Add-Res 'PASS' 'שני כללי החסימה (נכנס ויוצא) קיימים, פעילים ומוגבלים למתאם ה-Wi-Fi בלבד.' }
+        if (Test-BlockRulesValid) { Add-Res 'PASS' 'כללי החסימה (נכנס ויוצא, מתאמים ואלחוט) קיימים, פעילים ומכסים את כל המתאמים החסומים.' }
         else { Add-Res 'FAIL' 'כללי החסימה חסרים או שגויים (המשימה תתקן בתוך דקה).' }
         if ($a.Status -eq 'Disabled') { Add-Res 'PASS' 'המתאם כבוי.' } else { Add-Res 'INFO' "המתאם במצב $($a.Status), החסימה נשענת על חומת האש." }
     }
@@ -44,16 +44,19 @@ function Test-General {
         $t = Get-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue
         if ($t -and $t.State -ne 'Disabled') { Add-Res 'PASS' "המשימה $tn קיימת ופעילה." } else { Add-Res 'FAIL' "המשימה $tn חסרה או מושבתת." }
     }
-    # Ethernet / other adapters untouched
-    $wifiAlias = $a.Name
-    $other = @(Get-BlockRules | Get-NetFirewallInterfaceFilter |
-        ForEach-Object { @($_.InterfaceAlias) } | Where-Object { (Get-AdapterFilterIds $wifiAlias) -notcontains [string]$_ })
-    if ($other.Count -eq 0) { Add-Res 'PASS' 'אף כלל של WifiGate אינו מתייחס למתאם אחר.' } else { Add-Res 'FAIL' 'כלל של WifiGate מתייחס למתאם נוסף.' }
+    # Ethernet / other adapters untouched: rules may only mention blocked (radio) adapters
+    $targets = @(Get-BlockTargets)
+    $okIds = @(); foreach ($tg in $targets) { $okIds += (Get-AdapterFilterIds $tg) }
+    $other = @(Get-BlockRules | Where-Object { $_.DisplayName -notlike '*Wireless*' } | Get-NetFirewallInterfaceFilter |
+        ForEach-Object { @($_.InterfaceAlias) } | Where-Object { $okIds -notcontains [string]$_ })
+    if ($other.Count -eq 0) { Add-Res 'PASS' 'כללי WifiGate אינם מתייחסים לאף מתאם שאינו אלחוטי (Ethernet לא נחסם).' } else { Add-Res 'FAIL' ('כלל של WifiGate מתייחס למתאם נוסף: ' + ($other -join ', ')) }
+    Add-Res 'INFO' ('מתאמים חסומים: ' + (($targets | ForEach-Object { $_.Name }) -join ', '))
     $snap = @(Read-Json $script:SnapshotFile)
     foreach ($s in $snap) {
         $cur = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceGuid -eq $s.Guid } | Select-Object -First 1
         if (-not $cur) { Add-Res 'INFO' "המתאם $($s.Name) לא נמצא כעת."; continue }
-        if ($s.Status -ne 'Disabled' -and $cur.Status -eq 'Disabled') { Add-Res 'FAIL' "המתאם $($cur.Name) כבוי, אך היה פעיל בהתקנה." }
+        $isTarget = (@($targets | ForEach-Object { [string]$_.InterfaceGuid }) -contains [string]$s.Guid)
+        if ($s.Status -ne 'Disabled' -and $cur.Status -eq 'Disabled' -and -not $isTarget) { Add-Res 'FAIL' "המתאם $($cur.Name) כבוי, אך היה פעיל בהתקנה." }
         else { Add-Res 'PASS' "המתאם $($cur.Name) לא כובה על ידי WifiGate (מצב: $($cur.Status))." }
     }
     $hib = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' -ErrorAction SilentlyContinue)

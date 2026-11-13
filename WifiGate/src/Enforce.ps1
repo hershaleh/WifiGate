@@ -15,6 +15,7 @@ try {
     try { $st = Read-Json $script:StateFile } catch { Write-Log "state unreadable: $_" }
     if (-not $st -or $st.Mode -ne 'unlocked') { Set-WifiBlock }
     elseif (Test-LockDue) { Invoke-Lock; Write-Log 'auto-lock (timer or daily schedule)' }
+    else { Update-LastSeen }
     exit 0
 } catch {
     Write-Log "enforce error ($Mode): $($_.Exception.Message)"

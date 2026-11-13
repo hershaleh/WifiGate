@@ -33,6 +33,10 @@ function Enable-DarkTitle($Form) {
     })
 }
 
+function Blend([System.Drawing.Color]$A, [System.Drawing.Color]$B, [double]$T) {
+    return (Rgb ([int]($A.R + ($B.R - $A.R) * $T)) ([int]($A.G + ($B.G - $A.G) * $T)) ([int]($A.B + ($B.B - $A.B) * $T)))
+}
+
 function Set-DoubleBuffered($Control) {
     try {
         $p = [System.Windows.Forms.Control].GetProperty('DoubleBuffered', [System.Reflection.BindingFlags]'Instance,NonPublic')
@@ -82,8 +86,8 @@ function New-ThemedLabel([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H, [dou
     return $l
 }
 
-function New-LinkLabel([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H) {
-    $l = New-ThemedLabel $Text $X $Y $W $H 10 $script:Theme.Muted
+function New-LinkLabel([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H, [double]$Size = 10) {
+    $l = New-ThemedLabel $Text $X $Y $W $H $Size $script:Theme.Muted
     $l.Cursor = [System.Windows.Forms.Cursors]::Hand
     $l.Add_MouseEnter({ param($s, $e) $s.ForeColor = $script:Theme.Accent })
     $l.Add_MouseLeave({ param($s, $e) $s.ForeColor = $script:Theme.Muted })

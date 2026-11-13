@@ -32,6 +32,8 @@ function Update-MainView {
     $st = Get-StateInfo
     $changed = ($ui.Locked -ne $st.Locked)
     $ui.Locked = $st.Locked
+    $ui.Info = $st
+    if ($changed -and $ui.Shown) { $ui.Pop = 0.8 }
     if ($st.Locked) {
         Set-IfChanged $ui.Status 'Wi-Fi חסום'
         $ui.Status.ForeColor = $script:Theme.Danger
@@ -57,7 +59,7 @@ function Update-MainView {
         else           { $ui.BtnSetTimer.SetBounds(30, 366, 340, 40) }
         Set-Rounded $ui.BtnSetTimer 10; Set-Rounded $ui.BtnCancelTimer 10
     }
-    if ($changed) { $ui.Icon.Invalidate() }
+    $ui.Icon.Invalidate()
 }
 
 function Request-Password([string]$Prompt) {
@@ -83,7 +85,7 @@ function Invoke-MainUnlock {
             Set-MainMessage 'פותח את המתאם...' 'muted'; $ui.Form.Refresh()
             $up = Wait-AdapterUp 20 { [System.Windows.Forms.Application]::DoEvents() }
             if ($up) { Set-MainMessage 'Wi-Fi נפתח ומחובר.' 'ok' } else { Set-MainMessage 'Wi-Fi נפתח. ההתחברות לרשת עשויה לקחת כמה שניות.' 'ok' }
-        } else { Set-MainMessage $r.Message 'bad' }
+        } else { Set-MainMessage $r.Message 'bad'; Start-Shake }
     } catch {
         Write-Log "UI unlock error: $($_.Exception.Message)"
         Set-MainMessage 'אירעה שגיאה. ראו README (שחזור).' 'bad'
@@ -120,47 +122,104 @@ function Invoke-MainCancelTimer {
     Update-MainView
 }
 
+function Start-Shake {
+    $ui = $script:ui
+    if (-not $ui.Anim) { return }
+    $f = $ui.Form; $x = $f.Left
+    foreach ($o in 12, -12, 9, -9, 6, -6, 3, -3, 0) { $f.Left = $x + $o; Start-Sleep -Milliseconds 20; [System.Windows.Forms.Application]::DoEvents() }
+    $f.Left = $x
+}
+
+# Remaining fraction of the auto-lock countdown (1 -> 0), or -1 when there is no timer.
+function Get-CountdownFraction($Info) {
+    if ($null -eq $Info -or $Info.Locked -or -not $Info.AutoLockAt -or -not $Info.AutoLockFrom) { return -1.0 }
+    $total = ($Info.AutoLockAt - $Info.AutoLockFrom).TotalSeconds
+    if ($total -le 0) { return 0.0 }
+    $rem = ($Info.AutoLockAt - (Get-Date)).TotalSeconds
+    return [math]::Max(0.0, [math]::Min(1.0, $rem / $total))
+}
+
 function Paint-MainIcon($Sender, $E) {
+    $ui = $script:ui
     $g = $E.Graphics; $g.SmoothingMode = 'AntiAlias'
-    $w = $Sender.Width; $h = $Sender.Height
-    $locked = $true
-    if ($script:ui -and $script:ui.ContainsKey('Locked')) { $locked = $script:ui.Locked }
-    if ($locked) { $col = $script:Theme.Danger } else { $col = $script:Theme.Ok }
+    $cx = $Sender.Width / 2.0; $cy = $Sender.Height / 2.0
+    $mix = [double]$ui.Mix
+    $col = Blend $script:Theme.Danger $script:Theme.Ok $mix
+    $R = 54.0 * [double]$ui.Pop
+    $W = 2.0 * $R
+
+    if ($ui.Anim -and $mix -gt 0.5) {                      # gentle pulse while open
+        $p = [double]$ui.Pulse
+        $rr = $R + 4 + $p * 13
+        $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb([int](120 * (1 - $p) * $mix), $col), [single]2)
+        $g.DrawEllipse($pen, [single]($cx - $rr), [single]($cy - $rr), [single](2 * $rr), [single](2 * $rr)); $pen.Dispose()
+    }
     $bg = New-Object System.Drawing.SolidBrush($script:Theme.Card)
-    $g.FillEllipse($bg, 2, 2, ($w - 5), ($h - 5)); $bg.Dispose()
-    $ring = New-Object System.Drawing.Pen($col, [single]2.5)
-    $g.DrawEllipse($ring, 2, 2, ($w - 5), ($h - 5)); $ring.Dispose()
-    $cx = $w / 2; $by = $h * 0.66
-    $pen = New-Object System.Drawing.Pen($col, [single]($w * 0.07))
+    $g.FillEllipse($bg, [single]($cx - $R), [single]($cy - $R), [single]$W, [single]$W); $bg.Dispose()
+
+    $frac = [double]$ui.Frac
+    if ($frac -ge 0) {                                      # countdown ring
+        $base = New-Object System.Drawing.Pen($script:Theme.Border, [single]3.5)
+        $g.DrawEllipse($base, [single]($cx - $R), [single]($cy - $R), [single]$W, [single]$W); $base.Dispose()
+        if ($frac -gt 0.002) {
+            $arc = New-Object System.Drawing.Pen($script:Theme.Accent, [single]4.5)
+            $arc.StartCap = 'Round'; $arc.EndCap = 'Round'
+            $g.DrawArc($arc, [single]($cx - $R), [single]($cy - $R), [single]$W, [single]$W, [single]-90, [single](360 * $frac)); $arc.Dispose()
+        }
+    } else {
+        $ring = New-Object System.Drawing.Pen($col, [single]2.5)
+        $g.DrawEllipse($ring, [single]($cx - $R), [single]($cy - $R), [single]$W, [single]$W); $ring.Dispose()
+    }
+
+    $by = $cy + $W * 0.16
+    $pen = New-Object System.Drawing.Pen($col, [single]($W * 0.07))
     $pen.StartCap = 'Round'; $pen.EndCap = 'Round'
     foreach ($k in 1, 2, 3) {
-        $r = $w * 0.15 * $k + $w * 0.02
+        $r = $W * 0.15 * $k + $W * 0.02
         $g.DrawArc($pen, [single]($cx - $r), [single]($by - $r), [single](2 * $r), [single](2 * $r), [single]225, [single]90)
     }
     $dot = New-Object System.Drawing.SolidBrush($col)
-    $d = $w * 0.085
+    $d = $W * 0.085
     $g.FillEllipse($dot, [single]($cx - $d), [single]($by - $d), [single](2 * $d), [single](2 * $d))
     $dot.Dispose(); $pen.Dispose()
-    if ($locked) {
-        $cut = New-Object System.Drawing.Pen($script:Theme.Card, [single]($w * 0.13))
-        $sl = New-Object System.Drawing.Pen($col, [single]($w * 0.065))
+
+    if ($mix -lt 0.98) {                                    # slash fades out as it opens
+        $al = [int](255 * (1 - $mix))
+        $cut = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb($al, $script:Theme.Card), [single]($W * 0.13))
+        $sl  = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb($al, $col), [single]($W * 0.065))
         $cut.StartCap = 'Round'; $cut.EndCap = 'Round'; $sl.StartCap = 'Round'; $sl.EndCap = 'Round'
-        $g.DrawLine($cut, [single]($w * 0.27), [single]($h * 0.22), [single]($w * 0.73), [single]($h * 0.80))
-        $g.DrawLine($sl,  [single]($w * 0.27), [single]($h * 0.22), [single]($w * 0.73), [single]($h * 0.80))
+        $x1 = [single]($cx - $W * 0.23); $y1 = [single]($cy - $W * 0.28); $x2 = [single]($cx + $W * 0.23); $y2 = [single]($cy + $W * 0.30)
+        $g.DrawLine($cut, $x1, $y1, $x2, $y2); $g.DrawLine($sl, $x1, $y1, $x2, $y2)
         $cut.Dispose(); $sl.Dispose()
     }
 }
 
+# One animation frame (~30 fps). Cheap: only the icon panel is repainted.
+function Step-Anim {
+    $ui = $script:ui
+    if ($ui.Form.WindowState -eq 'Minimized') { return }
+    $target = 0.0; if (-not $ui.Locked) { $target = 1.0 }
+    if ($ui.Anim) {
+        if ($ui.Form.Opacity -lt 1) { $ui.Form.Opacity = [math]::Min(1.0, $ui.Form.Opacity + 0.12) }
+        if ($ui.Mix -lt $target) { $ui.Mix = [math]::Min($target, $ui.Mix + 0.07) } elseif ($ui.Mix -gt $target) { $ui.Mix = [math]::Max($target, $ui.Mix - 0.07) }
+        if ($ui.Pop -lt 1) { $ui.Pop = [math]::Min(1.0, $ui.Pop + ($ui.PopSpeed * (1.02 - $ui.Pop) + 0.004)) }
+        $ui.Pulse = ($ui.Pulse + 0.022) % 1.0
+    } else { $ui.Mix = $target; $ui.Pop = 1.0; $ui.Form.Opacity = 1.0 }
+    $ui.Frac = Get-CountdownFraction $ui.Info
+    $ui.Icon.Invalidate()
+}
+
 function New-MainForm {
-    $ui = @{ Locked = $true; Busy = $false; HadTimer = $false }
+    $ui = @{ Locked = $true; Busy = $false; HadTimer = $false; Shown = $false; Mix = 0.0; Pop = 1.0; PopSpeed = 0.16; Pulse = 0.0; Frac = -1.0; Info = $null; Anim = $true }
     $script:ui = $ui
+    try { $cfg0 = Read-Json $script:ConfigFile; $ui.Anim = [bool](Get-Prop $cfg0 'Animations' $true) } catch { }
     $f = New-ThemedForm 'WifiGate' 400 486
     $ui.Form = $f
     $f.FormBorderStyle = 'FixedSingle'     # FixedDialog has no minimize button
     $f.MinimizeBox = $true; $f.MaximizeBox = $false; $f.ShowInTaskbar = $true
 
     $ui.Icon = New-Object System.Windows.Forms.Panel
-    $ui.Icon.SetBounds(144, 22, 112, 112); $ui.Icon.BackColor = $script:Theme.Bg
+    $ui.Icon.SetBounds(130, 8, 140, 140); $ui.Icon.BackColor = $script:Theme.Bg
     Set-DoubleBuffered $ui.Icon
     $ui.Icon.Add_Paint({ param($s, $e) Paint-MainIcon $s $e })
     $ui.Status = New-ThemedLabel '' 20 142 360 36 18 $script:Theme.Text $true
@@ -187,10 +246,12 @@ function New-MainForm {
     $ui.OpenGroup = @($ui.BtnLock, $lblTimer, $ui.ChipsOpen, $ui.BtnSetTimer)
 
     $ui.Msg = New-ThemedLabel '' 20 418 360 24 9.5 $script:Theme.Muted
-    $ui.LinkPw = New-LinkLabel 'שינוי סיסמה' 40 450 150 24
-    $ui.LinkDaily = New-LinkLabel 'נעילה אוטומטית' 210 450 150 24
+    $ui.LinkPw    = New-LinkLabel 'שינוי סיסמה'    301 450 94 24 9
+    $ui.LinkDaily = New-LinkLabel 'נעילה אוטומטית' 204 450 94 24 9
+    $ui.LinkSet   = New-LinkLabel 'הגדרות'         107 450 94 24 9
+    $ui.LinkStats = New-LinkLabel 'סטטיסטיקה'      10  450 94 24 9
 
-    foreach ($c in @($ui.Icon, $ui.Status, $ui.Sub) + $ui.LockedGroup + $ui.OpenGroup + @($ui.BtnCancelTimer, $ui.Msg, $ui.LinkPw, $ui.LinkDaily)) { $f.Controls.Add($c) }
+    foreach ($c in @($ui.Icon, $ui.Status, $ui.Sub) + $ui.LockedGroup + $ui.OpenGroup + @($ui.BtnCancelTimer, $ui.Msg, $ui.LinkPw, $ui.LinkDaily, $ui.LinkSet, $ui.LinkStats)) { $f.Controls.Add($c) }
     $f.AcceptButton = $ui.BtnUnlock
 
     # remember the last chosen duration
@@ -208,13 +269,27 @@ function New-MainForm {
     $ui.BtnCancelTimer.Add_Click({ Invoke-MainCancelTimer })
     $ui.LinkPw.Add_Click({ if (Show-ChangePasswordDialog) { Set-MainMessage 'הסיסמה שונתה.' 'ok' } })
     $ui.LinkDaily.Add_Click({ if (Show-AutoLockDialog) { Set-MainMessage 'ההגדרות נשמרו.' 'ok' } })
+    $ui.LinkSet.Add_Click({ if (Show-SettingsDialog) { Set-MainMessage 'ההגדרות נשמרו.' 'ok'; $script:ui.Anim = [bool](Get-Prop (Read-Json $script:ConfigFile) 'Animations' $true) } })
+    $ui.LinkStats.Add_Click({ Show-StatsDialog })
 
     $ui.Timer = New-Object System.Windows.Forms.Timer
     $ui.Timer.Interval = 1000
     $ui.Timer.Add_Tick({ if (-not $script:ui.Busy) { Update-MainView } })
-    $f.Add_Shown({ Update-MainView; $script:ui.Timer.Start(); if ($script:ui.Locked) { $script:ui.Input.Box.Focus() } })
-    $f.Add_FormClosed({ $script:ui.Timer.Stop() })
+    $ui.AnimTimer = New-Object System.Windows.Forms.Timer
+    $ui.AnimTimer.Interval = 33
+    $ui.AnimTimer.Add_Tick({ Step-Anim })
+    if ($ui.Anim) { $f.Opacity = 0.0 }
+    $f.Add_Shown({
+        $script:ui.Shown = $true
+        Update-MainView
+        $script:ui.Mix = 0.0; if (-not $script:ui.Locked) { $script:ui.Mix = 1.0 }
+        $script:ui.Timer.Start(); $script:ui.AnimTimer.Start()
+        if ($script:ui.Locked) { $script:ui.Input.Box.Focus() }
+    })
+    $f.Add_FormClosed({ $script:ui.Timer.Stop(); $script:ui.AnimTimer.Stop() })
+    $ui.Mix = 0.0
     Update-MainView
+    if (-not $ui.Locked) { $ui.Mix = 1.0 }
     return $f
 }
 
@@ -354,4 +429,142 @@ function Show-AutoLockDialog {
     $f = New-AutoLockForm
     $res = $f.ShowDialog(); $f.Dispose()
     return ([string]$res -eq 'OK')
+}
+
+# ---------- settings ----------
+
+function New-SettingsForm {
+    $sd = @{}
+    $script:setf = $sd
+    $f = New-ThemedForm 'WifiGate - הגדרות' 380 450
+    $sd.Form = $f
+    $f.Controls.Add((New-ThemedLabel 'הגדרות' 20 12 340 34 16 $script:Theme.Text $true))
+    $defs = @(
+        @('Radios',   'חסום גם מתאמים אחרים: אלחוט, סלולר, Bluetooth ושיתוף אינטרנט (USB)'),
+        @('Tray',     'הצג אייקון במגש המערכת'),
+        @('Reminder', 'תזכורת 5 דקות לפני נעילה אוטומטית'),
+        @('Anim',     'הפעל אנימציות')
+    )
+    $y = 54
+    foreach ($d in $defs) {
+        $cb = New-Object System.Windows.Forms.CheckBox
+        $cb.Text = $d[1]; $cb.SetBounds(26, $y, 330, 44)
+        $cb.Font = New-Object System.Drawing.Font('Segoe UI', 10.5); $cb.ForeColor = $script:Theme.Text
+        $cb.BackColor = [System.Drawing.Color]::Transparent; $cb.Checked = $true
+        $f.Controls.Add($cb); $sd[$d[0]] = $cb
+        $y += 48
+    }
+    $pw = Add-Field $f 'סיסמה לאישור השינוי' 254 $true
+    $sd.Pw = $pw.Box
+    $sd.Msg = New-ThemedLabel '' 20 326 340 22 9.5 $script:Theme.Danger
+    $f.Controls.Add($sd.Msg)
+    $sd.Save = New-ThemedButton 'שמור' 195 372 165 46 'primary'
+    $cn = New-ThemedButton 'ביטול' 20 372 165 46 'ghost'
+    $cn.DialogResult = 'Cancel'
+    $f.Controls.Add($sd.Save); $f.Controls.Add($cn)
+    $f.AcceptButton = $sd.Save; $f.CancelButton = $cn
+    try {
+        $cfg = Read-Json $script:ConfigFile
+        $sd.Radios.Checked = [bool](Get-Prop $cfg 'BlockAllRadios' $true)
+        $sd.Tray.Checked = [bool](Get-Prop $cfg 'ShowTray' $true)
+        $sd.Reminder.Checked = [bool](Get-Prop $cfg 'Reminder' $true)
+        $sd.Anim.Checked = [bool](Get-Prop $cfg 'Animations' $true)
+    } catch { }
+    $sd.Save.Add_Click({
+        $x = $script:setf
+        $x.Save.Enabled = $false; $x.Msg.Text = ''; $x.Form.Refresh()
+        try { $r = Invoke-SaveSettings $x.Pw.Text $x.Radios.Checked $x.Tray.Checked $x.Reminder.Checked $x.Anim.Checked }
+        catch { Write-Log "settings error: $($_.Exception.Message)"; $r = New-Result $false 'אירעה שגיאה.' }
+        $x.Save.Enabled = $true
+        if ($r.Ok) { $x.Form.DialogResult = 'OK' } else { $x.Msg.Text = $r.Message; $x.Pw.Clear(); $x.Pw.Focus() }
+    })
+    return $f
+}
+
+function Show-SettingsDialog {
+    $f = New-SettingsForm
+    $res = $f.ShowDialog(); $f.Dispose()
+    return ([string]$res -eq 'OK')
+}
+
+# ---------- statistics (animated bar chart of open hours, last 7 days) ----------
+
+$script:DayLetters = @('א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש')     # Sunday .. Saturday
+
+function Format-Hours([double]$H) {
+    $m = [int][math]::Round($H * 60)
+    return ('{0}:{1:00}' -f [math]::Floor($m / 60), ($m % 60))
+}
+
+function Paint-StatsChart($Sender, $E) {
+    $st = $script:stf
+    $g = $E.Graphics; $g.SmoothingMode = 'AntiAlias'
+    $W = $Sender.Width; $H = $Sender.Height
+    $data = $st.Data; $n = $data.Hours.Count
+    $max = 1.0; foreach ($h in $data.Hours) { if ($h -gt $max) { $max = [math]::Ceiling($h) } }
+    $top = 26.0; $bottom = 28.0; $chartH = $H - $top - $bottom
+    $slot = ($W - 20.0) / $n; $bw = $slot * 0.56
+    $gridPen = New-Object System.Drawing.Pen($script:Theme.CardHover, [single]1)
+    $font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $muted = New-Object System.Drawing.SolidBrush($script:Theme.Muted)
+    $text = New-Object System.Drawing.SolidBrush($script:Theme.Text)
+    $center = New-Object System.Drawing.StringFormat; $center.Alignment = 'Center'
+    foreach ($frac in 0.0, 0.5, 1.0) {
+        $y = [single]($top + $chartH * (1 - $frac))
+        $g.DrawLine($gridPen, 10, $y, ($W - 10), $y)
+    }
+    $p = [double]$st.P; $ease = 1 - [math]::Pow(1 - $p, 3)
+    for ($i = 0; $i -lt $n; $i++) {
+        $x = ($W - 10.0) - ($i + 1) * $slot + ($slot - $bw) / 2          # oldest on the right (Hebrew reading order)
+        $val = [double]$data.Hours[$i]
+        $bh = [math]::Max(0.0, ($val / $max) * $chartH * $ease)
+        $isToday = ($i -eq $n - 1)
+        $col = $script:Theme.Accent; if ($isToday) { $col = $script:Theme.Ok }
+        if ($bh -gt 1) {
+            $path = Get-RoundPath ([single]$x) ([single]($top + $chartH - $bh)) ([single]$bw) ([single]$bh) ([single][math]::Min(8.0, $bw / 2))
+            $br = New-Object System.Drawing.SolidBrush($col); $g.FillPath($br, $path); $br.Dispose(); $path.Dispose()
+        }
+        if ($val -gt 0.01 -and $ease -gt 0.7) {
+            $g.DrawString((Format-Hours $val), $font, $text, [single]($x + $bw / 2), [single]($top + $chartH - $bh - 17), $center)
+        }
+        $day = $data.First.AddDays($i)
+        $g.DrawString($script:DayLetters[[int]$day.DayOfWeek], $font, $muted, [single]($x + $bw / 2), [single]($H - 22), $center)
+    }
+    $gridPen.Dispose(); $font.Dispose(); $muted.Dispose(); $text.Dispose(); $center.Dispose()
+}
+
+function New-StatsForm {
+    $st = @{ P = 0.0; Data = (Get-UsageStats 7) }
+    $script:stf = $st
+    $f = New-ThemedForm 'WifiGate - סטטיסטיקה' 380 440
+    $st.Form = $f
+    $f.Controls.Add((New-ThemedLabel 'שעות Wi-Fi פתוח, 7 ימים אחרונים' 20 14 340 30 13 $script:Theme.Text $true))
+    $d = $st.Data
+    $f.Controls.Add((New-ThemedLabel ('סה"כ ' + (Format-Hours $d.TotalHours) + ' שעות') 20 50 340 34 20 $script:Theme.Accent $true))
+    $chart = New-Object System.Windows.Forms.Panel
+    $chart.SetBounds(20, 96, 340, 220); $chart.BackColor = $script:Theme.Card
+    Set-DoubleBuffered $chart
+    Set-Rounded $chart 14
+    $chart.Add_Paint({ param($s, $e) Paint-StatsChart $s $e })
+    $f.Controls.Add($chart); $st.Chart = $chart
+    $avg = 0.0; if ($d.Hours.Count -gt 0) { $avg = $d.TotalHours / $d.Hours.Count }
+    $f.Controls.Add((New-ThemedLabel ('פתיחות: ' + $d.Sessions + '     ממוצע ליום: ' + (Format-Hours $avg) + '     הארוכה: ' + (Format-Hours ($d.LongestMinutes / 60.0))) 20 330 340 24 9.5 $script:Theme.Muted))
+    $ok = New-ThemedButton 'סגור' 20 372 340 46 'ghost'
+    $ok.DialogResult = 'OK'; $f.Controls.Add($ok); $f.AcceptButton = $ok; $f.CancelButton = $ok
+    $st.Timer = New-Object System.Windows.Forms.Timer
+    $st.Timer.Interval = 16
+    $st.Timer.Add_Tick({
+        $x = $script:stf
+        $x.P = [math]::Min(1.0, $x.P + 0.045)
+        $x.Chart.Invalidate()
+        if ($x.P -ge 1.0) { $x.Timer.Stop() }
+    })
+    $f.Add_Shown({ $script:stf.Timer.Start() })
+    $f.Add_FormClosed({ $script:stf.Timer.Stop() })
+    return $f
+}
+
+function Show-StatsDialog {
+    $f = New-StatsForm
+    [void]$f.ShowDialog(); $f.Dispose()
 }

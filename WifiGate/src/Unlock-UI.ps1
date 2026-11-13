@@ -8,6 +8,11 @@ if (-not (Test-IsAdmin)) {
         -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ('"' + $PSCommandPath + '"'))
     exit
 }
+# Only one main window at a time.
+$created = $false
+$script:instance = New-Object System.Threading.Mutex($true, 'Local\WifiGateMainWindow', [ref]$created)
+if (-not $created) { exit }
+
 . (Join-Path $PSScriptRoot 'Ui.ps1')
 . (Join-Path $PSScriptRoot 'Screens.ps1')
 

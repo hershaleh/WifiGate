@@ -73,6 +73,91 @@ try {
     [void](Invoke-Unlock 'OldPass123')
     Check 'no timer when default disabled' ($null -eq (Get-StateInfo).AutoLockAt)
 
+    # ---- multi-adapter blocking ----
+    function FakeNic($desc, $type, $media = '') { [pscustomobject]@{ InterfaceDescription = $desc; InterfaceType = $type; PhysicalMediaType = $media; Name = 'x' } }
+    Check 'radio: Wi-Fi adapter blocked'          (Test-RadioAdapter (FakeNic 'Intel(R) Wi-Fi 6 AX201 160MHz' 71 'Native 802.11'))
+    Check 'radio: USB Wi-Fi dongle blocked'       (Test-RadioAdapter (FakeNic 'Realtek RTL8188ETV Wireless LAN 802.11n USB 2.0 Network Adapter' 71))
+    Check 'radio: Wi-Fi Direct blocked'           (Test-RadioAdapter (FakeNic 'Microsoft Wi-Fi Direct Virtual Adapter' 71))
+    Check 'radio: Bluetooth PAN blocked'          (Test-RadioAdapter (FakeNic 'Bluetooth Device (Personal Area Network)' 6))
+    Check 'radio: USB tethering (RNDIS) blocked'  (Test-RadioAdapter (FakeNic 'Remote NDIS based Internet Sharing Device' 6))
+    Check 'radio: iPhone tethering blocked'       (Test-RadioAdapter (FakeNic 'Apple Mobile Device Ethernet' 6))
+    Check 'radio: mobile broadband blocked'       (Test-RadioAdapter (FakeNic 'Qualcomm Snapdragon X55 5G Modem' 243 'Wireless WAN'))
+    Check 'radio: wired Ethernet NOT blocked'     (-not (Test-RadioAdapter (FakeNic 'Intel(R) Ethernet Connection (7) I219-LM' 6 '802.3')))
+    Check 'radio: 2.5GbE NOT blocked'             (-not (Test-RadioAdapter (FakeNic 'Realtek Gaming 2.5GbE Family Controller' 6 '802.3')))
+    Check 'radio: USB Ethernet NOT blocked'       (-not (Test-RadioAdapter (FakeNic 'Realtek USB GbE Family Controller' 6 '802.3')))
+    Check 'radio: Hyper-V NOT blocked'            (-not (Test-RadioAdapter (FakeNic 'Hyper-V Virtual Ethernet Adapter' 6)))
+    Check 'radio: VPN NOT blocked'                (-not (Test-RadioAdapter (FakeNic 'WireGuard Tunnel' 53)))
+    Check 'radio: AnyConnect NOT blocked'         (-not (Test-RadioAdapter (FakeNic 'Cisco AnyConnect Secure Mobility Client Virtual Miniport Adapter for Windows x64' 6)))
+
+    # real firewall rules on the runner (rules only; adapters are never disabled in CI)
+    $okNic = $null
+    foreach ($cand in @(Get-NetAdapter | Where-Object Status -eq 'Up')) {
+        try {
+            Write-Json $script:ConfigFile ([pscustomobject]@{ AdapterGuid = [string]$cand.InterfaceGuid })
+            Get-BlockRules | Remove-NetFirewallRule
+            Update-BlockRules
+            $okNic = $cand; break
+        } catch { L ("INFO rules failed for $($cand.Name): " + $_.Exception.Message); Get-BlockRules | Remove-NetFirewallRule }
+    }
+    Check 'block rules created on a real adapter' ($null -ne $okNic)
+    if ($okNic) {
+        $rp = Get-BlockRulesProblem
+        Check 'block rules valid (2 adapter + 2 wireless rules)' (-not $rp) $rp
+        Check 'four rules exist' (@(Get-BlockRules).Count -eq 4)
+        $tr = @(Get-BlockRules | Where-Object { $_.DisplayName -like '*Wireless*' } | Get-NetFirewallInterfaceTypeFilter)
+        Check 'wireless rules filter interface type Wireless' (($tr.Count -eq 2) -and (@($tr | Where-Object { [string]$_.InterfaceType -ne 'Wireless' }).Count -eq 0))
+        Get-BlockRules | Select-Object -First 1 | Remove-NetFirewallRule
+        Check 'missing rule is detected' ([bool](Get-BlockRulesProblem))
+        Update-BlockRules
+        Check 'Update-BlockRules repairs a deleted rule' (-not (Get-BlockRulesProblem))
+        Update-BlockRules
+        Check 'Update-BlockRules is idempotent (still 4 rules)' (@(Get-BlockRules).Count -eq 4)
+        Set-DisabledByUs @('aaaa')
+        Check 'disabled list round-trips' ((@(Get-DisabledByUs) -join ',') -eq 'aaaa')
+        Clear-WifiBlock
+        Check 'Clear-WifiBlock removes rules and clears list' ((@(Get-BlockRules).Count -eq 0) -and (@(Get-DisabledByUs).Count -eq 0))
+    }
+
+    # ---- usage log + statistics ----
+    Remove-Item $script:UsageFile -Force -ErrorAction SilentlyContinue
+    Set-State 'locked'
+    Set-State 'unlocked'
+    Set-State 'unlocked' '' 
+    Set-State 'locked'
+    $ul = @(Get-Content $script:UsageFile)
+    Check 'usage: unlock and lock each logged once (no duplicates)' ($ul.Count -eq 2) ("lines=" + $ul.Count)
+    Remove-Item $script:UsageFile -Force
+    Write-Json $script:StateFile ([pscustomobject]@{ Mode = 'unlocked'; ChangedAt = (Get-Date).AddHours(-6).ToString('o'); AutoLockAt = ''; AutoLockFrom = ''; LastSeen = (Get-Date).AddHours(-5).ToString('o') })
+    Set-State 'locked'
+    $lastLine = (Get-Content $script:UsageFile | Select-Object -Last 1 | ConvertFrom-Json)
+    Check 'usage: lock after power-off is stamped at LastSeen, not now' ((([datetime]$lastLine.t) -lt (Get-Date).AddHours(-4.5)))
+    $now = [datetime]'2026-11-13T15:00:00'
+    Remove-Item $script:UsageFile -Force
+    Set-State 'locked'
+    Remove-Item $script:UsageFile -Force -ErrorAction SilentlyContinue
+    $evs = @(
+        @{ t = '2026-11-10T22:00:00'; ev = 'u' }, @{ t = '2026-11-11T01:00:00'; ev = 'l' },
+        @{ t = '2026-11-12T10:00:00'; ev = 'u' }, @{ t = '2026-11-12T12:30:00'; ev = 'l' })
+    Set-Content $script:UsageFile -Value ($evs | ForEach-Object { $_ | ConvertTo-Json -Compress }) -Encoding UTF8
+    $us = Get-UsageStats 7 $now
+    Check 'stats: 7 days returned' ($us.Hours.Count -eq 7)
+    Check 'stats: midnight-crossing session split (2h + 1h)' ([math]::Abs($us.Hours[3] - 2.0) -lt 0.01 -and [math]::Abs($us.Hours[4] - 1.0) -lt 0.01) ($us.Hours -join ',')
+    Check 'stats: total 5.5h, 2 sessions, longest 180 min' (([math]::Abs($us.TotalHours - 5.5) -lt 0.01) -and ($us.Sessions -eq 2) -and ([math]::Abs($us.LongestMinutes - 180) -lt 0.5)) ("{0} {1} {2}" -f $us.TotalHours, $us.Sessions, $us.LongestMinutes)
+
+    # ---- settings ----
+    Set-State 'unlocked'
+    Check 'settings: wrong password refused' (-not (Invoke-SaveSettings 'bad' $false $false $false $false).Ok)
+    Check 'settings: saved' (Invoke-SaveSettings 'OldPass123' $false $false $false $false).Ok
+    $cfgNow = Read-Json $script:ConfigFile
+    Check 'settings: values stored' (([bool]$cfgNow.BlockAllRadios -eq $false) -and ([bool]$cfgNow.ShowTray -eq $false) -and ([bool]$cfgNow.Animations -eq $false))
+    Check 'settings: radios off -> only chosen adapter is a target' (@(Get-BlockTargets).Count -eq 1)
+    [void](Invoke-SaveSettings 'OldPass123' $true $true $true $true)
+    Check 'settings: defaults restored' ([bool](Get-Prop (Read-Json $script:ConfigFile) 'BlockAllRadios' $false))
+
+    # ---- tray (headless self-test) ----
+    $trayOut = (& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'WifiGate\src\Tray.ps1') -SelfTest 2>&1 | Out-String)
+    Check 'tray self-test runs' ($trayOut -match 'tray-selftest-ok') $trayOut
+
     # change password
     Check 'change: too short refused' (-not (Invoke-ChangePassword 'OldPass123' 'short').Ok)
     Check 'change: wrong current refused' (-not (Invoke-ChangePassword 'wrong' 'NewPass456').Ok)
@@ -119,7 +204,7 @@ try {
     New-Item -ItemType Directory -Force $ShotDir | Out-Null
     function Shot($Form, [string]$Name) {
         $Form.StartPosition = 'Manual'; $Form.Location = New-Object System.Drawing.Point(50, 50)
-        $Form.Show(); [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 400; [System.Windows.Forms.Application]::DoEvents()
+        $Form.Show(); [System.Windows.Forms.Application]::DoEvents(); for ($w = 0; $w -lt 30; $w++) { Start-Sleep -Milliseconds 40; [System.Windows.Forms.Application]::DoEvents() }
         $bmp = New-Object System.Drawing.Bitmap($Form.ClientSize.Width, $Form.ClientSize.Height)
         $Form.DrawToBitmap($bmp, (New-Object System.Drawing.Rectangle(0, 0, $Form.ClientSize.Width, $Form.ClientSize.Height)))
         # DrawToBitmap of a Form includes the frame; crop the client area instead
@@ -143,6 +228,16 @@ try {
     Set-State 'locked'
     Shot (New-MainForm) 'main-locked-default5h'
     Shot (New-AutoLockForm) 'auto-lock-saved'
+    # statistics with a week of synthetic data
+    $evl = @()
+    foreach ($d in 6..0) {
+        $day = (Get-Date).Date.AddDays(-$d)
+        $len = @(2.5, 0.8, 4.2, 1.5, 3.1, 0.0, 1.2)[6 - $d]
+        if ($len -gt 0) { $evl += @{ t = $day.AddHours(18).ToString('o'); ev = 'u' }; $evl += @{ t = $day.AddHours(18 + $len).ToString('o'); ev = 'l' } }
+    }
+    Set-Content $script:UsageFile -Value ($evl | ForEach-Object { $_ | ConvertTo-Json -Compress }) -Encoding UTF8
+    Shot (New-StatsForm) 'stats'
+    Shot (New-SettingsForm) 'settings'
     Shot (New-CodeDialogForm 'AB3D-EF4G-HJ5K-LM6N-PQ7R') 'recovery-code'
     Shot (New-SecretDialogForm 'שחזור: הזינו את הסיסמה או את קוד השחזור.') 'secret-dialog'
     L 'screenshots done'

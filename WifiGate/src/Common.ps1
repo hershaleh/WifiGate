@@ -13,6 +13,8 @@ $script:ThrottleFile = Join-Path $script:DataDir 'throttle.json'
 $script:ConfigFile   = Join-Path $script:DataDir 'config.json'
 $script:SnapshotFile = Join-Path $script:DataDir 'snapshot.json'
 $script:LogFile      = Join-Path $script:DataDir 'wifigate.log'
+$script:DisabledFile = Join-Path $script:DataDir 'disabled.json'   # adapters this tool turned off
+$script:UsageFile    = Join-Path $script:DataDir 'usage.jsonl'     # unlock/lock history for the statistics screen
 $script:RuleGroup    = 'WifiGate'
 $script:Iterations   = 200000
 $script:DeskName     = 'System Console'     # the single Desktop shortcut
@@ -51,7 +53,78 @@ function New-Result([bool]$Ok, [string]$Message) {
 }
 
 function Set-State([string]$Mode, [string]$AutoLockAt = '') {
-    Write-Json $script:StateFile ([pscustomobject]@{ Mode = $Mode; ChangedAt = (Get-Date).ToString('o'); AutoLockAt = $AutoLockAt })
+    $prev = $null
+    try { $prev = Read-Json $script:StateFile } catch { }
+    $now = Get-Date
+    $from = ''; if ($AutoLockAt) { $from = $now.ToString('o') }
+    Write-Json $script:StateFile ([pscustomobject]@{ Mode = $Mode; ChangedAt = $now.ToString('o'); AutoLockAt = $AutoLockAt; AutoLockFrom = $from; LastSeen = $now.ToString('o') })
+    Write-UsageEvent $prev $Mode $now
+}
+
+# Called every minute while unlocked: remembers the last time the machine was alive,
+# so a power-off while unlocked does not count as hours of open Wi-Fi in the statistics.
+function Update-LastSeen {
+    $st = Read-Json $script:StateFile
+    if (-not $st -or $st.Mode -ne 'unlocked') { return }
+    Write-Json $script:StateFile ([pscustomobject]@{
+        Mode = 'unlocked'; ChangedAt = $st.ChangedAt
+        AutoLockAt = [string](Get-Prop $st 'AutoLockAt' ''); AutoLockFrom = [string](Get-Prop $st 'AutoLockFrom' '')
+        LastSeen = (Get-Date).ToString('o') })
+}
+
+function Write-UsageEvent($Prev, [string]$Mode, [datetime]$Now) {
+    try {
+        $prevMode = ''
+        if ($Prev) { $prevMode = [string](Get-Prop $Prev 'Mode' '') }
+        $ev = ''; $t = $Now
+        if ($Mode -eq 'unlocked' -and $prevMode -ne 'unlocked') { $ev = 'u' }
+        elseif ($Mode -ne 'unlocked' -and $prevMode -eq 'unlocked') {
+            $ev = 'l'
+            $ls = [string](Get-Prop $Prev 'LastSeen' '')
+            if ($ls) { $lsd = [datetime]$ls; if (($Now - $lsd).TotalMinutes -gt 3) { $t = $lsd } }
+        }
+        if (-not $ev) { return }
+        if ((Test-Path $script:UsageFile) -and ((Get-Item $script:UsageFile).Length -gt 200000)) {
+            $cut = (Get-Date).AddDays(-90)
+            $keep = @(Get-Content $script:UsageFile -Encoding UTF8 | Where-Object { try { ([datetime]($_ | ConvertFrom-Json).t) -ge $cut } catch { $false } })
+            Set-Content -Path $script:UsageFile -Value $keep -Encoding UTF8
+        }
+        Add-Content -Path $script:UsageFile -Encoding UTF8 -Value ((@{ t = $t.ToString('o'); ev = $ev } | ConvertTo-Json -Compress))
+    } catch { Write-Log "usage log error: $($_.Exception.Message)" }
+}
+
+# Hours of open Wi-Fi per day for the last N days (index 0 = oldest), plus totals.
+function Get-UsageStats([int]$Days = 7, $Now = $null) {
+    if (-not $Now) { $Now = Get-Date }
+    $events = @()
+    if (Test-Path $script:UsageFile) {
+        foreach ($line in (Get-Content $script:UsageFile -Encoding UTF8)) {
+            try { $o = $line | ConvertFrom-Json; $events += [pscustomobject]@{ T = [datetime]$o.t; Ev = [string]$o.ev } } catch { }
+        }
+    }
+    $events = @($events | Sort-Object T)
+    $intervals = @(); $start = $null
+    foreach ($e in $events) {
+        if ($e.Ev -eq 'u' -and $null -eq $start) { $start = $e.T }
+        elseif ($e.Ev -eq 'l' -and $null -ne $start) { if ($e.T -gt $start) { $intervals += [pscustomobject]@{ S = $start; E = $e.T } }; $start = $null }
+    }
+    $st = Get-StateInfo
+    if ($null -ne $start -and -not $st.Locked) { $intervals += [pscustomobject]@{ S = $start; E = $Now } }
+    $first = $Now.Date.AddDays(-($Days - 1))
+    $hours = New-Object 'double[]' $Days
+    $sessions = 0; $longest = 0.0
+    foreach ($iv in $intervals) {
+        $dur = ($iv.E - $iv.S).TotalMinutes
+        if ($iv.E -ge $first) { $sessions++; if ($dur -gt $longest) { $longest = $dur } }
+        for ($d = 0; $d -lt $Days; $d++) {
+            $ds = $first.AddDays($d); $de = $ds.AddDays(1)
+            $os = $iv.S; if ($os -lt $ds) { $os = $ds }
+            $oe = $iv.E; if ($oe -gt $de) { $oe = $de }
+            if ($oe -gt $os) { $hours[$d] += ($oe - $os).TotalHours }
+        }
+    }
+    $total = 0.0; foreach ($h in $hours) { $total += $h }
+    return [pscustomobject]@{ First = $first; Hours = $hours; TotalHours = $total; Sessions = $sessions; LongestMinutes = $longest }
 }
 
 # Safe property read (StrictMode throws on missing properties).
@@ -71,16 +144,18 @@ function Set-ConfigValue([string]$Name, $Value) {
 
 # For the UI: is Wi-Fi locked, and when (if ever) will it auto-lock.
 function Get-StateInfo {
-    $locked = $true; $at = $null
+    $locked = $true; $at = $null; $from = $null
     try {
         $s = Read-Json $script:StateFile
         if ($s -and $s.Mode -eq 'unlocked') {
             $locked = $false
             $v = [string](Get-Prop $s 'AutoLockAt' '')
             if ($v) { $at = [datetime]$v }
+            $f = [string](Get-Prop $s 'AutoLockFrom' '')
+            if ($f) { $from = [datetime]$f } elseif ($at) { $from = [datetime][string](Get-Prop $s 'ChangedAt' (Get-Date).ToString('o')) }
         }
     } catch { }
-    return [pscustomobject]@{ Locked = $locked; AutoLockAt = $at }
+    return [pscustomobject]@{ Locked = $locked; AutoLockAt = $at; AutoLockFrom = $from }
 }
 
 # ---------- adapter (always identified by GUID, never by name) ----------
@@ -108,6 +183,40 @@ function Wait-AdapterUp([int]$Seconds = 20, [scriptblock]$Pump = $null) {
     return $false
 }
 
+# ---------- which adapters get blocked ----------
+
+# Wireless / cellular / Bluetooth / USB-tethering adapters. Wired Ethernet, VPN and virtual-machine adapters are left alone.
+function Test-RadioAdapter($A) {
+    $d = [string](Get-Prop $A 'InterfaceDescription' '')
+    if ($d -match 'Wi-?Fi Direct') { return $true }
+    if ($d -match 'Hyper-V|VMware|VirtualBox|TAP-|TAP Windows|Npcap|Loopback|WAN Miniport|VPN|WireGuard|OpenVPN|Tailscale|ZeroTier|AnyConnect') { return $false }
+    if ([int](Get-Prop $A 'InterfaceType' 0) -in 71, 243, 244) { return $true }       # 802.11, mobile broadband
+    if ([string](Get-Prop $A 'PhysicalMediaType' '') -match '802\.11|Wireless|Bluetooth|WiMax') { return $true }
+    if ($d -match 'Wi-?Fi|Wireless|WLAN|802\.11|Bluetooth|Remote NDIS|RNDIS|Mobile Broadband|MBIM|Tethering|Apple Mobile Device Ethernet|Cellular') { return $true }
+    return $false
+}
+
+# The chosen Wi-Fi adapter (always) + every other radio adapter currently present (unless switched off in settings).
+function Get-BlockTargets {
+    $map = [ordered]@{}
+    $p = Get-WifiAdapter
+    $map[[string]$p.InterfaceGuid] = $p
+    $cfg = Read-Json $script:ConfigFile
+    if ([bool](Get-Prop $cfg 'BlockAllRadios' $true)) {
+        foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
+            if ((Test-RadioAdapter $a) -and -not $map.Contains([string]$a.InterfaceGuid)) { $map[[string]$a.InterfaceGuid] = $a }
+        }
+    }
+    return @($map.Values)
+}
+
+function Get-DisabledByUs {
+    $d = Read-Json $script:DisabledFile
+    if ($d -and $d.PSObject.Properties['Guids']) { return @($d.Guids | ForEach-Object { [string]$_ }) }
+    return @()
+}
+function Set-DisabledByUs($Guids) { Write-Json $script:DisabledFile ([pscustomobject]@{ Guids = @($Guids) }) }
+
 # ---------- firewall block ----------
 
 function Get-BlockRules {
@@ -115,62 +224,100 @@ function Get-BlockRules {
 }
 
 # Windows Firewall may store the interface filter either as the alias (name) or as the adapter's LUID number.
-function Get-AdapterFilterIds([string]$Alias) {
-    $ids = @($Alias)
-    try {
-        $a = Get-WifiAdapter
-        $ids += [string]$a.Name
-        foreach ($pr in $a.PSObject.Properties) {          # the LUID property is named NetLuid
-            if ($pr.Name -eq 'NetLuid' -or $pr.Name -eq 'InterfaceLuid') { $ids += [string]$pr.Value }
-        }
-    } catch { }
+function Get-AdapterFilterIds($Adapter) {
+    $ids = @([string]$Adapter.Name)
+    foreach ($pr in $Adapter.PSObject.Properties) {          # the LUID property is named NetLuid
+        if ($pr.Name -eq 'NetLuid' -or $pr.Name -eq 'InterfaceLuid') { $ids += [string]$pr.Value }
+    }
     return @($ids)
 }
 
 # Returns $null when the block rules are correct, otherwise a text describing what is wrong.
-function Get-BlockRulesProblem([string]$Alias) {
+# Expected: 2 alias rules (in/out) covering every target adapter + 2 "any wireless interface" rules (in/out).
+function Get-BlockRulesProblem([string]$Alias = '') {
+    $targets = @(Get-BlockTargets)
     $rules = @(Get-BlockRules)
-    $ids = Get-AdapterFilterIds $Alias
-    if ($rules.Count -ne 2) { return "נמצאו $($rules.Count) כללים, ציפיתי ל-2" }
+    $aliasRules = @($rules | Where-Object { $_.DisplayName -notlike '*Wireless*' })
+    $typeRules  = @($rules | Where-Object { $_.DisplayName -like '*Wireless*' })
+    if ($aliasRules.Count -ne 2 -or $typeRules.Count -ne 2) { return "נמצאו $($aliasRules.Count) כללי מתאם ו-$($typeRules.Count) כללי אלחוט, ציפיתי ל-2 ו-2" }
     foreach ($r in $rules) {
         if ([string]$r.Enabled -ne 'True') { return "הכלל '$($r.DisplayName)' לא פעיל (Enabled=$($r.Enabled))" }
         if ([string]$r.Action -ne 'Block') { return "הכלל '$($r.DisplayName)' אינו חוסם (Action=$($r.Action))" }
+    }
+    foreach ($grp in @($aliasRules, $typeRules)) {
+        $dirs = (@($grp | ForEach-Object { [string]$_.Direction }) | Sort-Object) -join ','
+        if ($dirs -ne 'Inbound,Outbound') { return "כיווני הכללים: $dirs" }
+    }
+    foreach ($r in $aliasRules) {
         $f = $r | Get-NetFirewallInterfaceFilter
         if (-not $f) { return "לכלל '$($r.DisplayName)' אין סינון מתאם" }
         $al = @($f.InterfaceAlias | ForEach-Object { [string]$_ })
-        if (@($al | Where-Object { $ids -contains $_ }).Count -eq 0) { return "סינון המתאם בכלל הוא [$($al -join ',')] ולא '$Alias'" }
+        foreach ($t in $targets) {
+            $ids = Get-AdapterFilterIds $t
+            if (@($al | Where-Object { $ids -contains $_ }).Count -eq 0) { return "המתאם '$($t.Name)' לא מכוסה בכלל (סינון: [$($al -join ',')])" }
+        }
     }
-    $dirs = (@($rules | ForEach-Object { [string]$_.Direction }) | Sort-Object) -join ','
-    if ($dirs -ne 'Inbound,Outbound') { return "כיווני הכללים: $dirs" }
+    foreach ($r in $typeRules) {
+        $tf = $r | Get-NetFirewallInterfaceTypeFilter
+        if (-not $tf -or [string]$tf.InterfaceType -ne 'Wireless') { return "הכלל '$($r.DisplayName)' אינו מסנן אלחוט" }
+    }
     return $null
 }
 
-function Test-BlockRulesValid([string]$Alias) { return (-not (Get-BlockRulesProblem $Alias)) }
+function Test-BlockRulesValid([string]$Alias = '') { return (-not (Get-BlockRulesProblem $Alias)) }
 
-# Idempotent: makes sure the block is in place. Changes nothing if it already is.
-function Set-WifiBlock {
-    $a = Get-WifiAdapter
-    $alias = $a.Name
+# Creates/repairs the firewall rules only (no adapter changes). Idempotent.
+function Update-BlockRules {
     Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True
-    if (-not (Test-BlockRulesValid $alias)) {
-        Get-BlockRules | Remove-NetFirewallRule
-        foreach ($d in 'Outbound', 'Inbound') {
-            New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup `
-                -Description 'WifiGate: blocks all traffic on the Wi-Fi interface until unlocked.' `
-                -Direction $d -Action Block -InterfaceAlias $alias -Profile Any -Enabled True | Out-Null
+    if (-not (Get-BlockRulesProblem)) { return }
+    Get-BlockRules | Remove-NetFirewallRule
+    $aliases = @(Get-BlockTargets | ForEach-Object { [string]$_.Name })
+    $desc = 'WifiGate: blocks all traffic on wireless/cellular interfaces until unlocked.'
+    foreach ($d in 'Outbound', 'Inbound') {
+        try {
+            New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup -Description $desc `
+                -Direction $d -Action Block -InterfaceAlias $aliases -Profile Any -Enabled True | Out-Null
+        } catch {
+            Write-Log "alias rule failed for [$($aliases -join ',')]: $($_.Exception.Message) - falling back to the chosen adapter only"
+            New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup -Description $desc `
+                -Direction $d -Action Block -InterfaceAlias $aliases[0] -Profile Any -Enabled True | Out-Null
         }
-        Write-Log "firewall rules (re)created for alias of $($a.InterfaceGuid)"
+        New-NetFirewallRule -DisplayName ('WifiGate block Wireless ' + $d) -Group $script:RuleGroup -Description $desc `
+            -Direction $d -Action Block -InterfaceType Wireless -Profile Any -Enabled True | Out-Null
     }
-    if ($a.Status -ne 'Disabled') {
-        Disable-NetAdapter -Name $alias -Confirm:$false
-        Write-Log 'adapter disabled'
+    Write-Log "firewall rules (re)created for: $($aliases -join ', ')"
+}
+
+# Idempotent: makes sure the block is in place (rules + target adapters turned off).
+function Set-WifiBlock {
+    Update-BlockRules
+    $targets = @(Get-BlockTargets)
+    $ours = @(Get-DisabledByUs)
+    foreach ($a in $targets) {
+        if ($a.Status -ne 'Disabled') {
+            if ($ours -notcontains [string]$a.InterfaceGuid) { $ours += [string]$a.InterfaceGuid }
+            Set-DisabledByUs $ours
+            try { Disable-NetAdapter -Name $a.Name -Confirm:$false; Write-Log "adapter disabled: $($a.Name)" } catch { Write-Log "disable failed for $($a.Name): $($_.Exception.Message)" }
+        }
     }
+    # adapters we turned off earlier that are no longer targets (setting changed): give them back
+    $targetGuids = @($targets | ForEach-Object { [string]$_.InterfaceGuid })
+    $still = @()
+    foreach ($g in $ours) {
+        if ($targetGuids -contains $g) { $still += $g; continue }
+        try { $x = Get-AdapterByGuid $g; if ($x.Status -eq 'Disabled') { Enable-NetAdapter -Name $x.Name -Confirm:$false } } catch { }
+    }
+    if ($still.Count -ne $ours.Count) { Set-DisabledByUs $still }
 }
 
 function Clear-WifiBlock {
     Get-BlockRules | Remove-NetFirewallRule
     $a = Get-WifiAdapter
     if ($a.Status -eq 'Disabled') { Enable-NetAdapter -Name $a.Name -Confirm:$false }
+    foreach ($g in @(Get-DisabledByUs)) {
+        try { $x = Get-AdapterByGuid $g; if ($x.Status -eq 'Disabled') { Enable-NetAdapter -Name $x.Name -Confirm:$false } } catch { }
+    }
+    Set-DisabledByUs @()
 }
 
 # State is written BEFORE acting when locking (fail closed).
@@ -275,9 +422,9 @@ function Invoke-Unlock([string]$Password, [int]$AutoLockMinutes = 0) {
 function Set-AutoLock([int]$Minutes) {
     $st = Read-Json $script:StateFile
     if (-not $st -or $st.Mode -ne 'unlocked') { throw 'Wi-Fi is not unlocked' }
-    $at = ''
-    if ($Minutes -gt 0) { $at = (Get-Date).AddMinutes($Minutes).ToString('o') }
-    Write-Json $script:StateFile ([pscustomobject]@{ Mode = 'unlocked'; ChangedAt = $st.ChangedAt; AutoLockAt = $at })
+    $at = ''; $from = ''
+    if ($Minutes -gt 0) { $at = (Get-Date).AddMinutes($Minutes).ToString('o'); $from = (Get-Date).ToString('o') }
+    Write-Json $script:StateFile ([pscustomobject]@{ Mode = 'unlocked'; ChangedAt = $st.ChangedAt; AutoLockAt = $at; AutoLockFrom = $from; LastSeen = (Get-Date).ToString('o') })
     Write-Log "auto-lock set: $Minutes min"
 }
 
@@ -313,6 +460,22 @@ function Invoke-SaveAutoLockSettings([string]$Password, [bool]$DefaultEnabled, [
     Set-ConfigValue 'DefaultAutoLock' ([pscustomobject]@{ Enabled = $DefaultEnabled; Minutes = $DefaultMinutes })
     Set-ConfigValue 'DailyLock' ([pscustomobject]@{ Enabled = $DailyEnabled; Time = $ts.ToString('hh\:mm') })
     Write-Log "auto-lock settings: after-unlock=$DefaultEnabled/$DefaultMinutes daily=$DailyEnabled/$DailyTime"
+    return (New-Result $true 'ההגדרות נשמרו.')
+}
+
+function Invoke-SaveSettings([string]$Password, [bool]$BlockAllRadios, [bool]$ShowTray, [bool]$Reminder, [bool]$Animations) {
+    $a = Test-AuthSecret $Password $true
+    if (-not $a.Ok) { return $a }
+    Set-ConfigValue 'BlockAllRadios' $BlockAllRadios
+    Set-ConfigValue 'ShowTray' $ShowTray
+    Set-ConfigValue 'Reminder' $Reminder
+    Set-ConfigValue 'Animations' $Animations
+    Write-Log "settings: radios=$BlockAllRadios tray=$ShowTray reminder=$Reminder animations=$Animations"
+    try {
+        $st = Get-StateInfo
+        if ($st.Locked) { Set-WifiBlock }                       # re-apply with the new target set
+        if ($ShowTray) { Start-ScheduledTask -TaskName 'WifiGate-Tray' -ErrorAction SilentlyContinue }
+    } catch { Write-Log "settings apply error: $($_.Exception.Message)" }
     return (New-Result $true 'ההגדרות נשמרו.')
 }
 
@@ -368,10 +531,21 @@ function Register-WifiGateTasks {
             -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650)
     Register-ScheduledTask -TaskName 'WifiGate-Tick' -Action $tick -Principal $princ -Settings $set -Force `
         -Trigger $tr -Description 'WifiGate: every minute, repairs the Wi-Fi block if it was removed while locked.' | Out-Null
+
+    # Tray icon: runs elevated in the installing user's session at logon (no UAC prompt; it only shows state / locks / opens the window).
+    try {
+        $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $tray = New-ScheduledTaskAction -Execute $ps -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + (Join-Path $script:ProgDir 'Tray.ps1') + '"')
+        $tprinc = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Highest
+        $tset = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([timespan]::Zero)
+        Register-ScheduledTask -TaskName 'WifiGate-Tray' -Action $tray -Principal $tprinc -Settings $tset -Force `
+            -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $me) -Description 'WifiGate: tray icon.' | Out-Null
+    } catch { Write-Log "tray task not registered: $($_.Exception.Message)" }
 }
 
 function Invoke-Uninstall {
-    foreach ($n in 'WifiGate-Boot', 'WifiGate-Tick', 'WifiGate-TrialFailsafe') {
+    Stop-ScheduledTask -TaskName 'WifiGate-Tray' -ErrorAction SilentlyContinue
+    foreach ($n in 'WifiGate-Tray', 'WifiGate-Boot', 'WifiGate-Tick', 'WifiGate-TrialFailsafe') {
         Unregister-ScheduledTask -TaskName $n -Confirm:$false -ErrorAction SilentlyContinue
     }
     try { Clear-WifiBlock } catch {
