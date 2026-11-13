@@ -29,6 +29,7 @@ jobs:
           Get-Item build\WifiGateSetup.exe | Format-List Name, Length
 
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: WifiGateSetup
           path: build/WifiGateSetup.exe
