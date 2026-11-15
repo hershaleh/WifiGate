@@ -185,26 +185,45 @@ function Wait-AdapterUp([int]$Seconds = 20, [scriptblock]$Pump = $null) {
 
 # ---------- which adapters get blocked ----------
 
-# Wireless / cellular / Bluetooth / USB-tethering adapters. Wired Ethernet, VPN and virtual-machine adapters are left alone.
-function Test-RadioAdapter($A) {
+# Categories the user can choose to block (the chosen main Wi-Fi adapter is always blocked).
+$script:BlockCategories = @('wifi', 'bluetooth', 'cellular', 'tether', 'wifidirect')
+
+# wifi = any other Wi-Fi adapter (e.g. USB dongle), bluetooth, cellular = mobile broadband, tether = USB/phone internet sharing,
+# wifidirect = Wi-Fi Direct virtual adapters. Wired Ethernet, VPN and virtual-machine adapters return $null (never blocked).
+function Get-AdapterCategory($A) {
     $d = [string](Get-Prop $A 'InterfaceDescription' '')
-    if ($d -match 'Wi-?Fi Direct') { return $true }
-    if ($d -match 'Hyper-V|VMware|VirtualBox|TAP-|TAP Windows|Npcap|Loopback|WAN Miniport|VPN|WireGuard|OpenVPN|Tailscale|ZeroTier|AnyConnect') { return $false }
-    if ([int](Get-Prop $A 'InterfaceType' 0) -in 71, 243, 244) { return $true }       # 802.11, mobile broadband
-    if ([string](Get-Prop $A 'PhysicalMediaType' '') -match '802\.11|Wireless|Bluetooth|WiMax') { return $true }
-    if ($d -match 'Wi-?Fi|Wireless|WLAN|802\.11|Bluetooth|Remote NDIS|RNDIS|Mobile Broadband|MBIM|Tethering|Apple Mobile Device Ethernet|Cellular') { return $true }
-    return $false
+    if ($d -match 'Wi-?Fi Direct') { return 'wifidirect' }
+    if ($d -match 'Hyper-V|VMware|VirtualBox|TAP-|TAP Windows|Npcap|Loopback|WAN Miniport|VPN|WireGuard|OpenVPN|Tailscale|ZeroTier|AnyConnect') { return $null }
+    $type = [int](Get-Prop $A 'InterfaceType' 0)
+    $media = [string](Get-Prop $A 'PhysicalMediaType' '')
+    if ($d -match 'Bluetooth' -or $media -match 'Bluetooth') { return 'bluetooth' }
+    if ($type -in 243, 244 -or $media -match 'WiMax' -or $d -match 'Mobile Broadband|MBIM|Cellular') { return 'cellular' }
+    if ($d -match 'Remote NDIS|RNDIS|Tethering|Apple Mobile Device Ethernet') { return 'tether' }
+    if ($type -eq 71 -or $media -match '802\.11|Wireless' -or $d -match 'Wi-?Fi|Wireless|WLAN|802\.11') { return 'wifi' }
+    return $null
 }
 
-# The chosen Wi-Fi adapter (always) + every other radio adapter currently present (unless switched off in settings).
+function Test-RadioAdapter($A) { return [bool](Get-AdapterCategory $A) }
+
+# The categories to block besides the main adapter. Older installs stored a single BlockAllRadios flag.
+function Get-BlockCategories {
+    $cfg = Read-Json $script:ConfigFile
+    $c = Get-Prop $cfg 'BlockCategories' $null
+    if ($null -ne $c) { return @($c | ForEach-Object { [string]$_ }) }
+    if ([bool](Get-Prop $cfg 'BlockAllRadios' $true)) { return @($script:BlockCategories) }
+    return @()
+}
+
+# The chosen Wi-Fi adapter (always) + every other adapter of a chosen category currently present.
 function Get-BlockTargets {
     $map = [ordered]@{}
     $p = Get-WifiAdapter
     $map[[string]$p.InterfaceGuid] = $p
-    $cfg = Read-Json $script:ConfigFile
-    if ([bool](Get-Prop $cfg 'BlockAllRadios' $true)) {
+    $cats = @(Get-BlockCategories)
+    if ($cats.Count -gt 0) {
         foreach ($a in @(Get-NetAdapter -ErrorAction SilentlyContinue)) {
-            if ((Test-RadioAdapter $a) -and -not $map.Contains([string]$a.InterfaceGuid)) { $map[[string]$a.InterfaceGuid] = $a }
+            $c = Get-AdapterCategory $a
+            if ($c -and ($cats -contains $c) -and -not $map.Contains([string]$a.InterfaceGuid)) { $map[[string]$a.InterfaceGuid] = $a }
         }
     }
     return @($map.Values)
@@ -463,14 +482,15 @@ function Invoke-SaveAutoLockSettings([string]$Password, [bool]$DefaultEnabled, [
     return (New-Result $true 'ההגדרות נשמרו.')
 }
 
-function Invoke-SaveSettings([string]$Password, [bool]$BlockAllRadios, [bool]$ShowTray, [bool]$Reminder, [bool]$Animations) {
+function Invoke-SaveSettings([string]$Password, [string[]]$Categories, [bool]$ShowTray, [bool]$Reminder, [bool]$Animations) {
     $a = Test-AuthSecret $Password $true
     if (-not $a.Ok) { return $a }
-    Set-ConfigValue 'BlockAllRadios' $BlockAllRadios
+    $cats = @($Categories | Where-Object { $script:BlockCategories -contains $_ })
+    Set-ConfigValue 'BlockCategories' $cats
     Set-ConfigValue 'ShowTray' $ShowTray
     Set-ConfigValue 'Reminder' $Reminder
     Set-ConfigValue 'Animations' $Animations
-    Write-Log "settings: radios=$BlockAllRadios tray=$ShowTray reminder=$Reminder animations=$Animations"
+    Write-Log "settings: block=$($cats -join '+') tray=$ShowTray reminder=$Reminder animations=$Animations"
     try {
         $st = Get-StateInfo
         if ($st.Locked) { Set-WifiBlock }                       # re-apply with the new target set
@@ -551,6 +571,9 @@ function Invoke-Uninstall {
     try { Clear-WifiBlock } catch {
         Get-BlockRules | Remove-NetFirewallRule
     }
+    $cfg = Read-Json $script:ConfigFile                      # shortcuts chosen at install time (names can be custom)
+    foreach ($p in @(Get-Prop $cfg 'Shortcuts' @())) { Remove-Item -LiteralPath ([string]$p) -Force -ErrorAction SilentlyContinue }
+    foreach ($p in @(Get-Prop $cfg 'Folders' @())) { Remove-Item -LiteralPath ([string]$p) -Recurse -Force -ErrorAction SilentlyContinue }
     $desk = [Environment]::GetFolderPath('Desktop')
     Get-ChildItem $desk -Filter 'WifiGate*.lnk' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $desk ($script:DeskName + '.lnk')) -Force -ErrorAction SilentlyContinue

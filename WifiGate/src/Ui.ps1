@@ -180,7 +180,7 @@ function New-ChipRow([int]$X, [int]$Y, [int]$W, [int]$H, $Labels) {
 }
 
 function Add-Field($Form, [string]$Caption, [int]$Y, [bool]$Secret = $true) {
-    $Form.Controls.Add((New-ThemedLabel $Caption 28 $Y 324 20 9.5 $script:Theme.Muted $false 'MiddleRight'))
+    $Form.Controls.Add((New-ThemedLabel $Caption 28 $Y 324 20 9.5 $script:Theme.Muted $false 'MiddleLeft'))   # RTL form mirrors alignment
     $in = New-ThemedInput 20 ($Y + 22) 340 $Secret
     $Form.Controls.Add($in.Panel)
     return $in

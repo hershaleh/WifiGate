@@ -18,6 +18,7 @@ try {
     . (Join-Path $Root 'WifiGate\src\Common.ps1')
     . (Join-Path $Root 'WifiGate\src\Ui.ps1')
     . (Join-Path $Root 'WifiGate\src\Screens.ps1')
+    . (Join-Path $Root 'WifiGate\src\Wizard.ps1')
     Remove-Item $script:DataDir -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $script:DataDir | Out-Null
     $nic = @(Get-NetAdapter | Where-Object Status -eq 'Up')[0]
@@ -88,6 +89,14 @@ try {
     Check 'radio: Hyper-V NOT blocked'            (-not (Test-RadioAdapter (FakeNic 'Hyper-V Virtual Ethernet Adapter' 6)))
     Check 'radio: VPN NOT blocked'                (-not (Test-RadioAdapter (FakeNic 'WireGuard Tunnel' 53)))
     Check 'radio: AnyConnect NOT blocked'         (-not (Test-RadioAdapter (FakeNic 'Cisco AnyConnect Secure Mobility Client Virtual Miniport Adapter for Windows x64' 6)))
+    Check 'category: Wi-Fi' ((Get-AdapterCategory (FakeNic 'Intel(R) Wi-Fi 6 AX201 160MHz' 71 'Native 802.11')) -eq 'wifi')
+    Check 'category: Bluetooth' ((Get-AdapterCategory (FakeNic 'Bluetooth Device (Personal Area Network)' 6)) -eq 'bluetooth')
+    Check 'category: cellular' ((Get-AdapterCategory (FakeNic 'Qualcomm Snapdragon X55 5G Modem' 243 'Wireless WAN')) -eq 'cellular')
+    Check 'category: tether (RNDIS)' ((Get-AdapterCategory (FakeNic 'Remote NDIS based Internet Sharing Device' 6)) -eq 'tether')
+    Check 'category: tether (iPhone)' ((Get-AdapterCategory (FakeNic 'Apple Mobile Device Ethernet' 6)) -eq 'tether')
+    Check 'category: Wi-Fi Direct' ((Get-AdapterCategory (FakeNic 'Microsoft Wi-Fi Direct Virtual Adapter' 71)) -eq 'wifidirect')
+    Check 'category: Ethernet is none' ($null -eq (Get-AdapterCategory (FakeNic 'Intel(R) Ethernet Connection (7) I219-LM' 6 '802.3')))
+    Check 'category: Hyper-V is none' ($null -eq (Get-AdapterCategory (FakeNic 'Hyper-V Virtual Ethernet Adapter' 6)))
 
     # real firewall rules on the runner (rules only; adapters are never disabled in CI)
     $okNic = $null
@@ -146,13 +155,54 @@ try {
 
     # ---- settings ----
     Set-State 'unlocked'
-    Check 'settings: wrong password refused' (-not (Invoke-SaveSettings 'bad' $false $false $false $false).Ok)
-    Check 'settings: saved' (Invoke-SaveSettings 'OldPass123' $false $false $false $false).Ok
+    Check 'settings: wrong password refused' (-not (Invoke-SaveSettings 'bad' @('wifi') $false $false $false).Ok)
+    Check 'settings: saved' (Invoke-SaveSettings 'OldPass123' @() $false $false $false).Ok
     $cfgNow = Read-Json $script:ConfigFile
-    Check 'settings: values stored' (([bool]$cfgNow.BlockAllRadios -eq $false) -and ([bool]$cfgNow.ShowTray -eq $false) -and ([bool]$cfgNow.Animations -eq $false))
-    Check 'settings: radios off -> only chosen adapter is a target' (@(Get-BlockTargets).Count -eq 1)
-    [void](Invoke-SaveSettings 'OldPass123' $true $true $true $true)
-    Check 'settings: defaults restored' ([bool](Get-Prop (Read-Json $script:ConfigFile) 'BlockAllRadios' $false))
+    Check 'settings: values stored' (([bool]$cfgNow.ShowTray -eq $false) -and ([bool]$cfgNow.Animations -eq $false) -and (@(Get-BlockCategories).Count -eq 0))
+    Check 'settings: no categories -> only chosen adapter is a target' (@(Get-BlockTargets).Count -eq 1)
+    [void](Invoke-SaveSettings 'OldPass123' @('bluetooth', 'bogus', 'tether') $true $true $true)
+    Check 'settings: categories stored, unknown ones dropped' ((@(Get-BlockCategories) -join ',') -eq 'bluetooth,tether') ((@(Get-BlockCategories)) -join ',')
+    [void](Invoke-SaveSettings 'OldPass123' @('wifi', 'bluetooth', 'cellular', 'tether', 'wifidirect') $true $true $true)
+    Check 'settings: all categories restored' (@(Get-BlockCategories).Count -eq 5)
+    Write-Json $script:ConfigFile ([pscustomobject]@{ AdapterGuid = [string]$nic.InterfaceGuid; BlockAllRadios = $false })
+    Check 'legacy BlockAllRadios=false -> no categories' (@(Get-BlockCategories).Count -eq 0)
+    Write-Json $script:ConfigFile ([pscustomobject]@{ AdapterGuid = [string]$nic.InterfaceGuid })
+    Check 'legacy config without categories -> all' (@(Get-BlockCategories).Count -eq 5)
+
+    # ---- wizard logic ----
+    $fakeC = @([pscustomobject]@{ InterfaceDescription = 'Intel(R) Wi-Fi 6 AX201 160MHz'; Status = 'Up'; Name = 'Wi-Fi'; InterfaceGuid = '{11111111-1111-1111-1111-111111111111}' },
+               [pscustomobject]@{ InterfaceDescription = 'Realtek USB Wireless LAN 802.11n'; Status = 'Disconnected'; Name = 'Wi-Fi 2'; InterfaceGuid = '{22222222-2222-2222-2222-222222222222}' })
+    $fakeAll = @($fakeC) + @([pscustomobject]@{ InterfaceDescription = 'Bluetooth Device (Personal Area Network)'; InterfaceType = 6; Name = 'Bluetooth'; InterfaceGuid = '{33333333-3333-3333-3333-333333333333}' })
+    $wizF = New-InstallWizard $fakeC $fakeAll
+    Check 'wizard: page 0 needs a selected adapter (default selected)' (-not (Test-WizardPage 0))
+    Check 'wizard: password too short refused' ([bool](Test-WizardPage 4))
+    $script:wz.Pw1.Box.Text = 'Abcdefg1!'; $script:wz.Pw2.Box.Text = 'different'
+    Check 'wizard: password mismatch refused' ([bool](Test-WizardPage 4))
+    $script:wz.Pw2.Box.Text = 'Abcdefg1!'
+    Check 'wizard: matching password accepted' (-not (Test-WizardPage 4))
+    Check 'wizard: strength meter orders passwords' ((Get-PasswordStrength 'abcdefgh') -lt (Get-PasswordStrength 'Abcdefg1!xyz'))
+    $script:wz.AdapterCards[1].Tag.Group = $script:wz.AdapterCards
+    $script:wz.AdapterCards[0].Tag.Selected = $false; $script:wz.AdapterCards[1].Tag.Selected = $true
+    $script:wz.CatCards['cellular'].Tag.Selected = $false
+    $script:wz.CatCards['wifidirect'].Tag.Selected = $false
+    $script:wz.ModeCards[0].Tag.Selected = $false; $script:wz.ModeCards[1].Tag.Selected = $true
+    $script:wz.HidName.Box.Text = 'Notes'
+    $wr = Get-WizardResult
+    Check 'wizard: result adapter' ([string]$wr.Adapter.InterfaceGuid -eq '{22222222-2222-2222-2222-222222222222}')
+    Check 'wizard: result categories' ((@($wr.Categories) -join ',') -eq 'wifi,bluetooth,tether') ((@($wr.Categories)) -join ',')
+    Check 'wizard: result hidden mode + name' ($wr.Hidden -and $wr.Name -eq 'Notes' -and $wr.Password -eq 'Abcdefg1!')
+    Check 'wizard: icon choices only existing programs' (@($script:wz.Icons | Where-Object { -not (Test-Path $_.Path) }).Count -eq 0)
+    Check 'wizard: at least 3 icons offered' ($script:wz.Icons.Count -ge 3) ("icons=" + $script:wz.Icons.Count)
+    $script:wz.HidName.Box.Text = 'a:b'
+    Check 'wizard: forbidden file-name characters refused' ([bool](Test-WizardPage 3))
+    $script:wz.ModeCards[0].Tag.Selected = $true; $script:wz.ModeCards[1].Tag.Selected = $false
+    $script:wz.OpenName.Box.Text = 'x'; $script:wz.LockName.Box.Text = 'x'
+    Check 'wizard: identical visible names refused' ([bool](Test-WizardPage 3))
+    $script:wz.LockName.Box.Text = 'y'
+    Check 'wizard: visible names accepted' (-not (Test-WizardPage 3))
+    $wsum = Get-WizardSummary
+    Check 'wizard: summary lists adapter and names' (($wsum -match 'Realtek USB') -and ($wsum -match 'x') -and ($wsum -match 'Bluetooth'))
+    $wizF.Dispose()
 
     # ---- tray (headless self-test) ----
     $trayOut = (& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'WifiGate\src\Tray.ps1') -SelfTest 2>&1 | Out-String)
@@ -202,7 +252,7 @@ try {
 
     # ---- 3. screenshots ----
     New-Item -ItemType Directory -Force $ShotDir | Out-Null
-    function Shot($Form, [string]$Name) {
+    function Shot($Form, [string]$Name, [bool]$Keep = $false) {
         $Form.StartPosition = 'Manual'; $Form.Location = New-Object System.Drawing.Point(50, 50)
         $Form.Show(); [System.Windows.Forms.Application]::DoEvents(); for ($w = 0; $w -lt 30; $w++) { Start-Sleep -Milliseconds 40; [System.Windows.Forms.Application]::DoEvents() }
         $bmp = New-Object System.Drawing.Bitmap($Form.ClientSize.Width, $Form.ClientSize.Height)
@@ -212,7 +262,7 @@ try {
         $Form.DrawToBitmap($full, (New-Object System.Drawing.Rectangle(0, 0, $Form.Width, $Form.Height)))
         $full.Save((Join-Path $ShotDir ($Name + '.png')), [System.Drawing.Imaging.ImageFormat]::Png)
         $full.Dispose(); $bmp.Dispose()
-        $Form.Close(); $Form.Dispose()
+        if (-not $Keep) { $Form.Close(); $Form.Dispose() }
     }
     Set-State 'locked'
     $mf = New-MainForm
@@ -240,7 +290,33 @@ try {
     Shot (New-SettingsForm) 'settings'
     Shot (New-CodeDialogForm 'AB3D-EF4G-HJ5K-LM6N-PQ7R') 'recovery-code'
     Shot (New-SecretDialogForm 'שחזור: הזינו את הסיסמה או את קוד השחזור.') 'secret-dialog'
+    # wizard pages (fake adapters) + progress window
+    $wzf = New-InstallWizard $fakeC $fakeAll
+    $script:wz.Pw1.Box.Text = 'Abcdefg1!x'; $script:wz.Pw2.Box.Text = 'Abcdefg1!x'
+    $script:wz.Strength = 0.8; $script:wz.StrengthTarget = 0.8; $script:wz.MeterLbl.Text = 'חזקה'
+    Shot $wzf 'wiz-0-adapter' $true
+    Set-WizardPage 1 $true; Shot $wzf 'wiz-1-block' $true
+    Set-WizardPage 2 $true; Shot $wzf 'wiz-2-mode' $true
+    Set-WizardPage 3 $true; Shot $wzf 'wiz-3-names-visible' $true
+    Set-WizardPage 2 $true
+    $script:wz.ModeCards[0].Tag.Selected = $false; $script:wz.ModeCards[1].Tag.Selected = $true
+    Set-WizardPage 3 $true; Shot $wzf 'wiz-3-icons-hidden' $true
+    Set-WizardPage 4 $true; Shot $wzf 'wiz-4-password' $true
+    Set-WizardPage 5 $true; Shot $wzf 'wiz-5-summary' $true
+    Check 'wizard: last page button says install' ($script:wz.Next.Text -eq 'התקנה')
+    $wzf.Close(); $wzf.Dispose()
+    $pfm = New-ProgressForm
+    Set-Progress 'בדיקה עצמית: פתיחה בסיסמה...' 0.65
+    Shot $pfm 'progress'
     L 'screenshots done'
+
+    # uninstall removes exactly the shortcuts recorded in config.json (custom names, Hebrew folder)
+    $dummy = Join-Path $heb 'dummy-folder'
+    New-Item -ItemType Directory -Force $dummy | Out-Null
+    $l2path = Join-Path $heb (([string][char]0x05E4 + [char]0x05EA + [char]0x05D9 + [char]0x05D7 + [char]0x05D4) + '.lnk')
+    Write-Json $script:ConfigFile ([pscustomobject]@{ AdapterGuid = [string]$nic.InterfaceGuid; Shortcuts = @((Join-Path $heb 'System Console.lnk'), $l2path); Folders = @($dummy) })
+    Invoke-Uninstall
+    Check 'uninstall removed recorded shortcuts and folders' ((-not (Test-Path (Join-Path $heb 'System Console.lnk'))) -and (-not (Test-Path $l2path)) -and (-not (Test-Path $dummy)))
 } catch {
     L ('EXCEPTION: ' + $_.Exception.Message + ' @ ' + $_.InvocationInfo.PositionMessage)
     $bad++

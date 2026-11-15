@@ -436,36 +436,56 @@ function Show-AutoLockDialog {
 function New-SettingsForm {
     $sd = @{}
     $script:setf = $sd
-    $f = New-ThemedForm 'WifiGate - הגדרות' 380 450
+    $f = New-ThemedForm 'WifiGate - הגדרות' 380 640
     $sd.Form = $f
-    $f.Controls.Add((New-ThemedLabel 'הגדרות' 20 12 340 34 16 $script:Theme.Text $true))
+    $f.Controls.Add((New-ThemedLabel 'הגדרות' 20 10 340 34 16 $script:Theme.Text $true))
+    $f.Controls.Add((New-ThemedLabel 'מה נחסם (מתאם ה-Wi-Fi הראשי נחסם תמיד)' 20 46 340 22 10 $script:Theme.Muted))
+    $catDefs = @(
+        @('wifi',       'מתאמי Wi-Fi נוספים (כרטיס USB)'),
+        @('bluetooth',  'Bluetooth'),
+        @('cellular',   'סלולר (מודם / Mobile Broadband)'),
+        @('tether',     'שיתוף אינטרנט (USB / טלפון)'),
+        @('wifidirect', 'Wi-Fi Direct')
+    )
+    $sd.Cats = @{}
+    $y = 72
+    foreach ($d in $catDefs) {
+        $cb = New-Object System.Windows.Forms.CheckBox
+        $cb.Text = $d[1]; $cb.SetBounds(26, $y, 330, 30)
+        $cb.Font = New-Object System.Drawing.Font('Segoe UI', 10.5); $cb.ForeColor = $script:Theme.Text
+        $cb.BackColor = [System.Drawing.Color]::Transparent; $cb.Checked = $true
+        $f.Controls.Add($cb); $sd.Cats[$d[0]] = $cb
+        $y += 32
+    }
+    $f.Controls.Add((New-ThemedLabel 'כללי' 20 ($y + 6) 340 22 10 $script:Theme.Muted))
     $defs = @(
-        @('Radios',   'חסום גם מתאמים אחרים: אלחוט, סלולר, Bluetooth ושיתוף אינטרנט (USB)'),
         @('Tray',     'הצג אייקון במגש המערכת'),
         @('Reminder', 'תזכורת 5 דקות לפני נעילה אוטומטית'),
         @('Anim',     'הפעל אנימציות')
     )
-    $y = 54
+    $y += 32
     foreach ($d in $defs) {
         $cb = New-Object System.Windows.Forms.CheckBox
-        $cb.Text = $d[1]; $cb.SetBounds(26, $y, 330, 44)
+        $cb.Text = $d[1]; $cb.SetBounds(26, $y, 330, 30)
         $cb.Font = New-Object System.Drawing.Font('Segoe UI', 10.5); $cb.ForeColor = $script:Theme.Text
         $cb.BackColor = [System.Drawing.Color]::Transparent; $cb.Checked = $true
         $f.Controls.Add($cb); $sd[$d[0]] = $cb
-        $y += 48
+        $y += 32
     }
-    $pw = Add-Field $f 'סיסמה לאישור השינוי' 254 $true
+    $pw = Add-Field $f 'סיסמה לאישור השינוי' ($y + 8) $true
     $sd.Pw = $pw.Box
-    $sd.Msg = New-ThemedLabel '' 20 326 340 22 9.5 $script:Theme.Danger
+    $sd.Msg = New-ThemedLabel '' 20 ($y + 78) 340 22 9.5 $script:Theme.Danger
     $f.Controls.Add($sd.Msg)
-    $sd.Save = New-ThemedButton 'שמור' 195 372 165 46 'primary'
-    $cn = New-ThemedButton 'ביטול' 20 372 165 46 'ghost'
+    $sd.Save = New-ThemedButton 'שמור' 195 ($y + 106) 165 46 'primary'
+    $cn = New-ThemedButton 'ביטול' 20 ($y + 106) 165 46 'ghost'
     $cn.DialogResult = 'Cancel'
     $f.Controls.Add($sd.Save); $f.Controls.Add($cn)
     $f.AcceptButton = $sd.Save; $f.CancelButton = $cn
+    $f.ClientSize = New-Object System.Drawing.Size(380, ($y + 170))
     try {
         $cfg = Read-Json $script:ConfigFile
-        $sd.Radios.Checked = [bool](Get-Prop $cfg 'BlockAllRadios' $true)
+        $cur = @(Get-BlockCategories)
+        foreach ($k in @($sd.Cats.Keys)) { $sd.Cats[$k].Checked = ($cur -contains $k) }
         $sd.Tray.Checked = [bool](Get-Prop $cfg 'ShowTray' $true)
         $sd.Reminder.Checked = [bool](Get-Prop $cfg 'Reminder' $true)
         $sd.Anim.Checked = [bool](Get-Prop $cfg 'Animations' $true)
@@ -473,7 +493,8 @@ function New-SettingsForm {
     $sd.Save.Add_Click({
         $x = $script:setf
         $x.Save.Enabled = $false; $x.Msg.Text = ''; $x.Form.Refresh()
-        try { $r = Invoke-SaveSettings $x.Pw.Text $x.Radios.Checked $x.Tray.Checked $x.Reminder.Checked $x.Anim.Checked }
+        $sel = @($x.Cats.Keys | Where-Object { $x.Cats[$_].Checked })
+        try { $r = Invoke-SaveSettings $x.Pw.Text $sel $x.Tray.Checked $x.Reminder.Checked $x.Anim.Checked }
         catch { Write-Log "settings error: $($_.Exception.Message)"; $r = New-Result $false 'אירעה שגיאה.' }
         $x.Save.Enabled = $true
         if ($r.Ok) { $x.Form.DialogResult = 'OK' } else { $x.Msg.Text = $r.Message; $x.Pw.Clear(); $x.Pw.Focus() }
