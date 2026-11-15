@@ -216,6 +216,7 @@ function New-MainForm {
     $script:ui = $ui
     try { $cfg0 = Read-Json $script:ConfigFile; $ui.Anim = [bool](Get-Prop $cfg0 'Animations' $true) } catch { }
     $f = New-ThemedForm 'WifiGate' 400 486
+    $f.TopMost = $false                                       # normal window, not always-on-top
     $ui.Form = $f
     $f.FormBorderStyle = 'FixedSingle'     # FixedDialog has no minimize button
     $f.MinimizeBox = $true; $f.MaximizeBox = $false; $f.ShowInTaskbar = $true

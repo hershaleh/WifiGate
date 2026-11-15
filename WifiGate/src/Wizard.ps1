@@ -10,7 +10,7 @@ function New-Card([int]$X, [int]$Y, [int]$W, [int]$H, [string]$Title, [string]$S
     if (-not $Locked) { $p.Cursor = [System.Windows.Forms.Cursors]::Hand }
     Set-DoubleBuffered $p
     $p.Tag = @{ Title = $Title; Sub = $Sub; Style = $Style; Selected = $Selected; Image = $Image; Locked = $Locked; Hover = $false; Group = $null; OnSelect = $null }
-    $p.Add_MouseEnter({ param($s, $e) $s.Tag.Hover = $true; $s.Invalidate() })
+    $p.Add_MouseEnter({ param($s, $e) $s.Tag.Hover = $true; $s.Invalidate(); try { $s.Parent.Focus() } catch { } })
     $p.Add_MouseLeave({ param($s, $e) $s.Tag.Hover = $false; $s.Invalidate() })
     $p.Add_Click({
         param($s, $e)
@@ -129,7 +129,10 @@ function New-WizardText([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H, [doub
 
 function New-WizardPage([string]$Title, [string]$Sub) {
     $p = New-Object System.Windows.Forms.Panel
-    $p.SetBounds(0, 0, 540, 470); $p.BackColor = $script:Theme.Bg; $p.Visible = $false
+    $p.SetBounds(0, 0, 560, 470); $p.BackColor = $script:Theme.Bg; $p.Visible = $false
+    $p.AutoScroll = $true                                    # content taller than the window scrolls
+    $p.Anchor = [System.Windows.Forms.AnchorStyles]'Top,Bottom,Left'
+    $p.Add_MouseEnter({ param($s, $e) $s.Focus() })          # so the mouse wheel scrolls the page under the cursor
     $p.Controls.Add((New-WizardText $Title 0 0 540 34 17 $script:Theme.Text $true))
     $p.Controls.Add((New-WizardText $Sub 0 36 540 40 10 $script:Theme.Muted))
     return $p
@@ -142,11 +145,16 @@ function New-InstallWizard($Cands, $All) {
     $wz = @{ Index = 0; DotPos = 0.0; Slide = $null; Busy = $false; Cands = @($Cands); All = @($All); Strength = 0.0; StrengthTarget = 0.0; Shake = $null }
     $script:wz = $wz
     $f = New-ThemedForm 'WifiGate - התקנה' 600 680
+    $f.TopMost = $false                                       # a normal window: other windows can cover it
+    $f.FormBorderStyle = 'Sizable'; $f.MaximizeBox = $true; $f.MinimizeBox = $true; $f.ShowInTaskbar = $true
+    $f.ClientSize = New-Object System.Drawing.Size(600, 680)
+    $f.MinimumSize = New-Object System.Drawing.Size($f.Width, [int]($f.Height * 0.7))
     $wz.Form = $f
 
     # header: progress dots
     $dots = New-Object System.Windows.Forms.Panel
     $dots.SetBounds(0, 14, 600, 30); $dots.BackColor = $script:Theme.Bg
+    $dots.Anchor = [System.Windows.Forms.AnchorStyles]'Top'
     Set-DoubleBuffered $dots
     $dots.Add_Paint({
         param($s, $e)
@@ -170,7 +178,8 @@ function New-InstallWizard($Cands, $All) {
     $f.Controls.Add($dots)
 
     $cont = New-Object System.Windows.Forms.Panel
-    $cont.SetBounds(30, 60, 540, 470); $cont.BackColor = $script:Theme.Bg
+    $cont.SetBounds(20, 60, 560, 470); $cont.BackColor = $script:Theme.Bg
+    $cont.Anchor = [System.Windows.Forms.AnchorStyles]'Top,Bottom'       # keeps its width, centred; grows taller with the window
     $f.Controls.Add($cont)
     $wz.Cont = $cont
     $wz.Enter = @{}
@@ -178,7 +187,6 @@ function New-InstallWizard($Cands, $All) {
 
     # ---- page 0: adapter ----
     $p0 = New-WizardPage 'בחירת מתאם ה-Wi-Fi' 'זה המתאם שייחסם. ברוב המחשבים יש רק אחד.'
-    $p0.AutoScroll = $true
     $wz.AdapterCards = New-Object System.Collections.ArrayList
     $y = 84
     foreach ($a in $wz.Cands) {
@@ -190,11 +198,11 @@ function New-InstallWizard($Cands, $All) {
     $cont.Controls.Add($p0)
 
     # ---- page 1: what to block ----
-    $p1 = New-WizardPage 'מה לחסום' 'מתאם ה-Wi-Fi שבחרתם נחסם תמיד. אפשר לחסום גם אלה (בכל חיבור, גם אם יתחברו בעתיד):'
+    $p1 = New-WizardPage 'מה לחסום' 'מתאם ה-Wi-Fi שבחרתם נחסם תמיד. אפשר לחסום גם אלה, וגם אם יתחברו בעתיד:'
     $wz.CatDefs = @(
         @('main',       'מתאם ה-Wi-Fi הראשי',               'תמיד חסום'),
         @('wifi',       'מתאמי Wi-Fi נוספים',               'למשל כרטיס Wi-Fi ב-USB'),
-        @('bluetooth',  'Bluetooth',                         'רשת Bluetooth (PAN) ושיתוף קבצים ברשת'),
+        @('bluetooth',  'Bluetooth',                         'רשת Bluetooth (PAN)'),
         @('cellular',   'סלולר',                             'מודם סלולרי / Mobile Broadband / 4G / 5G'),
         @('tether',     'שיתוף אינטרנט (טתרינג)',           'טלפון מחובר ב-USB, iPhone, מודמים חיצוניים'),
         @('wifidirect', 'Wi-Fi Direct',                      'חיבורי Wi-Fi ישירים בין מכשירים')
@@ -223,7 +231,7 @@ function New-InstallWizard($Cands, $All) {
         foreach ($d in $w.CatDefs) {
             if ($d[0] -eq 'main') { continue }
             $n = 0; if ($cnt.ContainsKey($d[0])) { $n = [int]$cnt[$d[0]] }
-            $tail = 'לא נמצא כרגע, ייחסם אם יתחבר'
+            $tail = 'לא נמצא כרגע'
             if ($n -gt 0) { $tail = "נמצאו כרגע: $n" }
             $w.CatCards[$d[0]].Tag.Sub = $d[2] + '   |   ' + $tail
             $w.CatCards[$d[0]].Invalidate()
@@ -347,6 +355,7 @@ function New-InstallWizard($Cands, $All) {
     $p6 = New-WizardPage 'סיכום' 'זה מה שייעשה. הנעילה תופעל רק אחרי בדיקה עצמית ואישור נוסף שלכם.'
     $sum = New-Object System.Windows.Forms.TextBox
     $sum.Multiline = $true; $sum.ReadOnly = $true; $sum.BorderStyle = 'None'; $sum.ScrollBars = 'Vertical'
+    $sum.Anchor = [System.Windows.Forms.AnchorStyles]'Top,Bottom,Left,Right'
     $sum.SetBounds(0, 84, 540, 384); $sum.Font = New-Object System.Drawing.Font('Segoe UI', 10)
     $sum.BackColor = $script:Theme.Card; $sum.ForeColor = $script:Theme.Text
     $wz.Summary = $sum; $p6.Controls.Add($sum)
@@ -363,6 +372,9 @@ function New-InstallWizard($Cands, $All) {
     $wz.Back = New-ThemedButton 'חזרה' 210 580 175 50 'ghost'
     $wz.Cancel = New-LinkLabel 'ביטול' 30 590 110 30 10
     $wz.Cancel.Add_Click({ $script:wz.Form.DialogResult = 'Cancel' })
+    $wz.Msg.Anchor = [System.Windows.Forms.AnchorStyles]'Bottom'
+    $wz.Next.Anchor = [System.Windows.Forms.AnchorStyles]'Bottom'; $wz.Back.Anchor = [System.Windows.Forms.AnchorStyles]'Bottom'
+    $wz.Cancel.Anchor = [System.Windows.Forms.AnchorStyles]'Bottom,Left'
     $wz.Back.Visible = $false
     $f.Controls.Add($wz.Next); $f.Controls.Add($wz.Back); $f.Controls.Add($wz.Cancel)
     $f.CancelButton = $null; $f.AcceptButton = $wz.Next
@@ -391,8 +403,8 @@ function New-InstallWizard($Cands, $All) {
         if ($null -ne $w.Slide) {
             $sl = $w.Slide; $sl.T += 0.085
             $t = [math]::Min($sl.T, 1.0); $ease = 1 - [math]::Pow(1 - $t, 3)
-            $w.Pages[$sl.To].Left = [int](-$sl.Dir * 540 * (1 - $ease))
-            $w.Pages[$sl.From].Left = [int]($sl.Dir * 540 * $ease)
+            $w.Pages[$sl.To].Left = [int](-$sl.Dir * 560 * (1 - $ease))
+            $w.Pages[$sl.From].Left = [int]($sl.Dir * 560 * $ease)
             if ($sl.T -ge 1.0) {
                 $w.Pages[$sl.From].Visible = $false; $w.Pages[$sl.From].Left = 0
                 $w.Pages[$sl.To].Left = 0
@@ -441,7 +453,7 @@ function Set-WizardPage([int]$Index, [bool]$Instant = $false) {
         return
     }
     $dir = 1; if ($Index -lt $from) { $dir = -1 }
-    $to.Left = [int](-$dir * 540); $to.Visible = $true; $to.BringToFront()
+    $to.Left = [int](-$dir * 560); $to.Visible = $true; $to.BringToFront(); $to.AutoScrollPosition = New-Object System.Drawing.Point(0, 0)
     $w.Busy = $true
     $w.Slide = @{ From = $from; To = $Index; Dir = $dir; T = 0.0 }
 }
