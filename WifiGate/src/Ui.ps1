@@ -159,11 +159,11 @@ function Select-Chip($Panel, [int]$Index) {
             $b.FlatAppearance.MouseOverBackColor = $script:Theme.CardHover; $b.FlatAppearance.MouseDownBackColor = $script:Theme.CardHover
         }
     }
-    if ($ctx.OnChange) { & $ctx.OnChange $Index }       # optional hook (set after creation)
+    if ($ctx.ContainsKey('OnChange') -and $ctx.OnChange) { & $ctx.OnChange $Index }       # optional hook (set after creation)
 }
 
 function New-ChipRow([int]$X, [int]$Y, [int]$W, [int]$H, $Labels) {
-    $ctx = @{ Index = 0; Buttons = (New-Object System.Collections.ArrayList) }
+    $ctx = @{ Index = 0; Buttons = (New-Object System.Collections.ArrayList); OnChange = $null }
     $panel = New-Object System.Windows.Forms.Panel
     $panel.SetBounds($X, $Y, $W, $H); $panel.BackColor = $script:Theme.Bg; $panel.Tag = $ctx
     $n = @($Labels).Count; $gap = 6
