@@ -267,7 +267,7 @@ function New-InstallWizard($Cands, $All) {
     $wz.PanelVisible = $pv; $p3.Controls.Add($pv)
     # hidden-mode panel
     $ph = New-Object System.Windows.Forms.Panel
-    $ph.SetBounds(0, 84, 540, 380); $ph.BackColor = $script:Theme.Bg
+    $ph.SetBounds(0, 84, 540, 430); $ph.BackColor = $script:Theme.Bg
     $ph.Controls.Add((New-WizardText 'שם הקובץ בשולחן העבודה' 0 0 540 22 10 $script:Theme.Muted))
     $wz.HidName = New-ThemedInput 0 24 540 $false
     $wz.HidName.Box.Text = 'System Console'
