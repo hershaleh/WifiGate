@@ -300,6 +300,18 @@ function Get-BlockRulesProblem([string]$Alias = '') {
 function Test-BlockRulesValid([string]$Alias = '') { return (-not (Get-BlockRulesProblem $Alias)) }
 
 # Creates/repairs the firewall rules only (no adapter changes). Idempotent.
+# Makes sure the adapter is enabled and has a network interface (needed before a firewall rule can name it).
+function Initialize-AdapterForRules($A) {
+    $name = [string]$A.Name
+    if ([string]$A.Status -eq 'Disabled') { Enable-NetAdapter -Name $name -Confirm:$false -ErrorAction SilentlyContinue }
+    $end = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $end) {
+        if (Get-NetIPInterface -InterfaceAlias $name -ErrorAction SilentlyContinue) { return $true }
+        Start-Sleep -Milliseconds 400
+    }
+    return $false
+}
+
 function Get-ExtraAliases {
     $p = Get-WifiAdapter
     return @(Get-BlockTargets | Where-Object { [string]$_.InterfaceGuid -ne [string]$p.InterfaceGuid } | ForEach-Object { [string]$_.Name } | Sort-Object)
@@ -338,9 +350,24 @@ function Update-BlockRules {
         Remove-BlockRules
         $p = Get-WifiAdapter
         $desc = 'WifiGate: blocks all traffic on wireless/cellular interfaces until unlocked.'
+        # A turned-off adapter has no network interface, so the firewall cannot resolve its alias ("The specified interface was not found").
+        # Turn it on briefly; the caller turns it off again right after the rules exist.
+        $ready = Initialize-AdapterForRules $p
+        if (-not $ready) { Write-Log "adapter '$($p.Name)' has no network interface yet; trying the rule anyway" }
         foreach ($d in 'Outbound', 'Inbound') {
-            New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup -Description $desc `
-                -Direction $d -Action Block -InterfaceAlias ([string]$p.Name) -Profile Any -Enabled True | Out-Null
+            $made = $false
+            for ($try = 1; $try -le 5 -and -not $made; $try++) {
+                try {
+                    New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup -Description $desc `
+                        -Direction $d -Action Block -InterfaceAlias ([string]$p.Name) -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+                    $made = $true
+                } catch {
+                    Write-Log "alias rule attempt $try failed: $($_.Exception.Message)"
+                    if ($try -ge 5) { throw }
+                    Start-Sleep -Seconds 2
+                    [void](Initialize-AdapterForRules (Get-WifiAdapter))
+                }
+            }
             New-NetFirewallRule -DisplayName ('WifiGate block Wireless ' + $d) -Group $script:RuleGroup -Description $desc `
                 -Direction $d -Action Block -InterfaceType Wireless -Profile Any -Enabled True | Out-Null
         }
