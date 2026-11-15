@@ -122,7 +122,7 @@ $openHk = ''; $lockHk = ''
 if ($ch.Hotkeys) { $openHk = 'CTRL+ALT+P'; $lockHk = 'CTRL+ALT+X' }
 if ($ch.Hidden) {
     $icon = 'imageres.dll,11'
-    if ($ch.IconPath) { $icon = $ch.IconPath + ',0' }
+    if ($ch.IconSpec) { $icon = $ch.IconSpec }
     New-GateShortcut $desk $ch.Name 'Console.ps1' $icon '' $false
     $made += (Join-Path $desk ($ch.Name + '.lnk'))
     if ($ch.Hotkeys) {

@@ -191,8 +191,18 @@ try {
     Check 'wizard: result adapter' ([string]$wr.Adapter.InterfaceGuid -eq '{22222222-2222-2222-2222-222222222222}')
     Check 'wizard: result categories' ((@($wr.Categories) -join ',') -eq 'wifi,bluetooth,tether') ((@($wr.Categories)) -join ',')
     Check 'wizard: result hidden mode + name' ($wr.Hidden -and $wr.Name -eq 'Notes' -and $wr.Password -eq 'Abcdefg1!')
-    Check 'wizard: icon choices only existing programs' (@($script:wz.Icons | Where-Object { -not (Test-Path $_.Path) }).Count -eq 0)
-    Check 'wizard: at least 3 icons offered' ($script:wz.Icons.Count -ge 3) ("icons=" + $script:wz.Icons.Count)
+    $catTxt = @()
+    foreach ($k in $script:IconKeys) {
+        $its = @(Get-IconCategory $k); $catTxt += "$k=$($its.Count)"
+        Check "icons: $k specs point to existing files" (@($its | Where-Object { -not (Test-Path (($_.Spec -split ',')[0])) }).Count -eq 0)
+    }
+    L ('INFO icon categories: ' + ($catTxt -join ' '))
+    Check 'icons: tools offers at least 3' (@(Get-IconCategory 'tools').Count -ge 3)
+    Check 'icons: system offers at least 3' (@(Get-IconCategory 'system').Count -ge 3)
+    Check 'icons: folders offers at least 5' (@(Get-IconCategory 'folders').Count -ge 5)
+    Check 'icons: variety offers at least 30' (@(Get-IconCategory 'variety').Count -ge 30)
+    Check 'wizard: default icon selected' ($null -ne $script:wz.SelIcon)
+    Check 'wizard: result has an icon spec' ((Get-WizardResult).IconSpec -match ',\d+$') ((Get-WizardResult).IconSpec)
     $script:wz.HidName.Box.Text = 'a:b'
     Check 'wizard: forbidden file-name characters refused' ([bool](Test-WizardPage 3))
     $script:wz.ModeCards[0].Tag.Selected = $true; $script:wz.ModeCards[1].Tag.Selected = $false
@@ -335,6 +345,8 @@ try {
     Set-WizardPage 2 $true
     $script:wz.ModeCards[0].Tag.Selected = $false; $script:wz.ModeCards[1].Tag.Selected = $true
     Set-WizardPage 3 $true; Shot $wzf 'wiz-3-icons-hidden' $true
+    Select-Chip $script:wz.IconChips 5; Shot $wzf 'wiz-3-icons-variety' $true
+    Select-Chip $script:wz.IconChips 1; Shot $wzf 'wiz-3-icons-system' $true
     Set-WizardPage 4 $true; Shot $wzf 'wiz-4-password' $true
     Set-WizardPage 5 $true; Shot $wzf 'wiz-5-two-admins' $true
     $script:wz.TwoCard.Tag.Selected = $true; $script:wz.Adm2Panel.Visible = $true; $script:wz.TwoCard.Invalidate()

@@ -103,24 +103,160 @@ function Get-PasswordStrength([string]$Pw) {
     return [math]::Min(1.0, [math]::Min($Pw.Length / 14.0, 1.0) * 0.6 + ($cl / 4.0) * 0.4)
 }
 
-# Harmless-looking system programs whose icon the shortcut can borrow. Only those present on this PC are offered.
-function Get-IconChoices {
+# ---------- icon catalog ----------
+# Icons come from programs and system files that exist on every PC (nothing is copied). Spec = "path,index" as used by shortcuts.
+
+function Initialize-IconApi {
+    if ('WgIcons' -as [type]) { return $true }
+    try {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class WgIcons {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern uint ExtractIconEx(string file, int index, IntPtr[] large, IntPtr[] small, uint count);
+    [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
+}
+"@
+        return $true
+    } catch { return $false }
+}
+
+# A 32x32 copy of icon #Index from a file (exe/dll), or $null.
+function Get-IconBitmap([string]$Path, [int]$Index) {
+    try {
+        if (Initialize-IconApi) {
+            $l = New-Object 'IntPtr[]' 1; $sm = New-Object 'IntPtr[]' 1
+            $n = [WgIcons]::ExtractIconEx($Path, $Index, $l, $sm, 1)
+            if ($n -ge 1 -and $l[0] -ne [IntPtr]::Zero) {
+                $ic = [System.Drawing.Icon]::FromHandle($l[0])
+                $bmp = New-Object System.Drawing.Bitmap($ic.ToBitmap())
+                $ic.Dispose(); [void][WgIcons]::DestroyIcon($l[0])
+                if ($sm[0] -ne [IntPtr]::Zero) { [void][WgIcons]::DestroyIcon($sm[0]) }
+                return $bmp
+            }
+        }
+        if ($Index -eq 0) { $ico = [System.Drawing.Icon]::ExtractAssociatedIcon($Path); $bmp = $ico.ToBitmap(); $ico.Dispose(); return $bmp }
+    } catch { }
+    return $null
+}
+
+$script:IconKeys = @('tools', 'system', 'web', 'office', 'folders', 'variety')
+$script:IconLabels = @('כלים', 'מערכת', 'אינטרנט', 'משרד', 'תיקיות', 'מגוון')
+
+# Items of one category that exist on this PC: @{ Name; Spec; Image; AutoName }.
+function Get-IconCategory([string]$Key) {
     $sys = Join-Path $env:SystemRoot 'System32'
-    $defs = @(
-        @('notepad.exe', 'Notepad'), @('calc.exe', 'Calculator'), @('mspaint.exe', 'Paint'), @('control.exe', 'Control Panel'),
-        @('msinfo32.exe', 'System Information'), @('cleanmgr.exe', 'Disk Cleanup'), @('charmap.exe', 'Character Map'),
-        @('eventvwr.exe', 'Event Viewer'), @('resmon.exe', 'Resource Monitor'), @('mstsc.exe', 'Remote Desktop'),
-        @('taskmgr.exe', 'Task Manager'), @('dxdiag.exe', 'DirectX Diagnostic'), @('winver.exe', 'About Windows'), @('perfmon.exe', 'Performance Monitor')
-    )
-    $list = @()
+    $pf = $env:ProgramFiles; $pf86 = ${env:ProgramFiles(x86)}; if (-not $pf86) { $pf86 = $pf }
+    $defs = @()      # each: path, name
+    switch ($Key) {
+        'tools' {
+            foreach ($d in @(@('notepad.exe', 'Notepad'), @('calc.exe', 'Calculator'), @('mspaint.exe', 'Paint'), @('write.exe', 'WordPad'),
+                    @('charmap.exe', 'Character Map'), @('SnippingTool.exe', 'Snipping Tool'), @('osk.exe', 'On-Screen Keyboard'), @('magnify.exe', 'Magnifier'),
+                    @('narrator.exe', 'Narrator'), @('psr.exe', 'Steps Recorder'), @('cleanmgr.exe', 'Disk Cleanup'), @('dfrgui.exe', 'Defragment Drives'),
+                    @('mstsc.exe', 'Remote Desktop'), @('sndvol.exe', 'Volume Mixer'), @('DisplaySwitch.exe', 'Display Switch'), @('fsquirt.exe', 'Bluetooth Transfer'))) {
+                $defs += , @((Join-Path $sys $d[0]), $d[1])
+            }
+        }
+        'system' {
+            foreach ($d in @(@('control.exe', 'Control Panel'), @('msinfo32.exe', 'System Information'), @('eventvwr.exe', 'Event Viewer'), @('resmon.exe', 'Resource Monitor'),
+                    @('perfmon.exe', 'Performance Monitor'), @('taskmgr.exe', 'Task Manager'), @('winver.exe', 'About Windows'), @('dxdiag.exe', 'DirectX Diagnostic'),
+                    @('msconfig.exe', 'System Configuration'), @('mmc.exe', 'Management Console'), @('rstrui.exe', 'System Restore'), @('msdt.exe', 'Support Diagnostic'),
+                    @('wuapp.exe', 'Windows Update'), @('mblctr.exe', 'Mobility Center'), @('taskschd.msc', 'Task Scheduler'), @('lusrmgr.msc', 'Local Users'))) {
+                $defs += , @((Join-Path $sys $d[0]), $d[1])
+            }
+            $defs += , @((Join-Path $env:SystemRoot 'explorer.exe'), 'File Explorer')
+            $defs += , @((Join-Path $env:SystemRoot 'regedit.exe'), 'Registry Editor')
+        }
+        'web' {
+            $defs += , @((Join-Path $pf86 'Microsoft\Edge\Application\msedge.exe'), 'Microsoft Edge')
+            $defs += , @((Join-Path $pf 'Microsoft\Edge\Application\msedge.exe'), 'Microsoft Edge')
+            $defs += , @((Join-Path $pf 'Google\Chrome\Application\chrome.exe'), 'Google Chrome')
+            $defs += , @((Join-Path $pf86 'Google\Chrome\Application\chrome.exe'), 'Google Chrome')
+            $defs += , @((Join-Path $pf 'Mozilla Firefox\firefox.exe'), 'Firefox')
+            $defs += , @((Join-Path $pf 'Internet Explorer\iexplore.exe'), 'Internet Explorer')
+            $defs += , @((Join-Path $env:LOCALAPPDATA 'Microsoft\OneDrive\OneDrive.exe'), 'OneDrive')
+            $defs += , @((Join-Path $sys 'mstsc.exe'), 'Remote Desktop')
+            $defs += , @((Join-Path $pf 'Windows Mail\wab.exe'), 'Contacts')
+            $defs += , @((Join-Path $pf 'Windows Media Player\wmplayer.exe'), 'Media Player')
+            $defs += , @((Join-Path $pf 'Windows Photo Viewer\PhotoViewer.dll'), 'Photo Viewer')
+        }
+        'office' {
+            foreach ($root in @('Microsoft Office\root\Office16', 'Microsoft Office\Office16', 'Microsoft Office\root\Office15', 'Microsoft Office\Office15')) {
+                foreach ($d in @(@('WINWORD.EXE', 'Word'), @('EXCEL.EXE', 'Excel'), @('POWERPNT.EXE', 'PowerPoint'), @('OUTLOOK.EXE', 'Outlook'),
+                        @('ONENOTE.EXE', 'OneNote'), @('MSACCESS.EXE', 'Access'), @('MSPUB.EXE', 'Publisher'), @('VISIO.EXE', 'Visio'))) {
+                    $defs += , @((Join-Path $pf (Join-Path $root $d[0])), $d[1])
+                    $defs += , @((Join-Path $pf86 (Join-Path $root $d[0])), $d[1])
+                }
+            }
+            $defs += , @((Join-Path $pf 'Adobe\Acrobat DC\Acrobat\Acrobat.exe'), 'Acrobat')
+            $defs += , @((Join-Path $pf86 'Adobe\Acrobat Reader DC\Reader\AcroRd32.exe'), 'Acrobat Reader')
+            $defs += , @((Join-Path $pf 'LibreOffice\program\soffice.exe'), 'LibreOffice')
+            $defs += , @((Join-Path $pf 'Windows NT\Accessories\wordpad.exe'), 'WordPad')
+        }
+        'folders' {
+            $sh = Join-Path $sys 'shell32.dll'
+            $names = @('File', 'Document', 'Application', 'Folder', 'Open Folder', 'Floppy Drive', 'Floppy Drive 2', 'USB Drive', 'Local Disk', 'Network Drive', 'Network Drive (offline)', 'CD Drive', 'RAM Disk', 'Network')
+            $list = @()
+            for ($i = 0; $i -lt $names.Count; $i++) {
+                $bmp = Get-IconBitmap $sh $i
+                if ($bmp) { $list += [pscustomobject]@{ Name = $names[$i]; Spec = "$sh,$i"; Image = $bmp; AutoName = $true } }
+            }
+            return $list
+        }
+        'variety' {
+            $im = Join-Path $sys 'imageres.dll'
+            $list = @()
+            if (Test-Path $im) {
+                $total = 120
+                if (Initialize-IconApi) { try { $n = [int][WgIcons]::ExtractIconEx($im, -1, $null, $null, 0); if ($n -gt 0) { $total = [math]::Min($n, 120) } } catch { } }
+                for ($i = 0; $i -lt $total; $i++) {
+                    $bmp = Get-IconBitmap $im $i
+                    if ($bmp) { $list += [pscustomobject]@{ Name = ('Icon ' + ($i + 1)); Spec = "$im,$i"; Image = $bmp; AutoName = $false } }
+                }
+            }
+            return $list
+        }
+    }
+    $seen = @{}; $list = @()
     foreach ($d in $defs) {
-        $path = Join-Path $sys $d[0]
-        if (-not (Test-Path $path)) { $alt = Join-Path $env:SystemRoot $d[0]; if (Test-Path $alt) { $path = $alt } else { continue } }
-        try { $ico = [System.Drawing.Icon]::ExtractAssociatedIcon($path); $bmp = $ico.ToBitmap(); $ico.Dispose() } catch { continue }
-        $list += [pscustomobject]@{ Name = $d[1]; Path = $path; Image = $bmp }
-        if ($list.Count -ge 12) { break }
+        $path = [string]$d[0]
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        if ($seen.ContainsKey($d[1])) { continue }
+        $bmp = Get-IconBitmap $path 0
+        if (-not $bmp) { continue }
+        $seen[$d[1]] = $true
+        $list += [pscustomobject]@{ Name = $d[1]; Spec = "$path,0"; Image = $bmp; AutoName = $true }
     }
     return $list
+}
+
+# Fills the scrolling icon grid with one category (selection is kept across categories).
+function Show-IconCategory([int]$Index) {
+    $w = $script:wz
+    $key = $script:IconKeys[$Index]
+    if (-not $w.IconCache.ContainsKey($key)) { $w.IconCache[$key] = @(Get-IconCategory $key) }
+    $items = @($w.IconCache[$key])
+    if ($null -eq $w.SelIcon -and $items.Count -gt 0) { $w.SelIcon = $items[0]; $w.HidName.Box.Text = [string]$items[0].Name }
+    $g = $w.IconGrid
+    $g.SuspendLayout()
+    foreach ($c in @($g.Controls)) { $g.Controls.Remove($c); $c.Dispose() }
+    $w.IconCards.Clear()
+    foreach ($it in $items) {
+        $sel = ($null -ne $w.SelIcon -and [string]$it.Spec -eq [string]$w.SelIcon.Spec)
+        $card = New-Card 0 0 120 92 $it.Name '' 'tile' $sel $it.Image
+        $card.Margin = New-Object System.Windows.Forms.Padding(3)
+        $card.Tag.Group = $w.IconCards
+        $card.Tag.Item = $it
+        $card.Tag.OnSelect = {
+            param($c)
+            $w2 = $script:wz; $w2.SelIcon = $c.Tag.Item
+            if ($c.Tag.Item.AutoName) { $w2.HidName.Box.Text = [string]$c.Tag.Item.Name }
+        }
+        [void]$w.IconCards.Add($card); $g.Controls.Add($card)
+    }
+    $g.AutoScrollPosition = New-Object System.Drawing.Point(0, 0)
+    $g.ResumeLayout()
+    $w.IconEmpty.Visible = ($items.Count -eq 0)
 }
 
 function New-WizardText([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H, [double]$Size, $Color, [bool]$Bold = $false) {
@@ -129,7 +265,7 @@ function New-WizardText([string]$Text, [int]$X, [int]$Y, [int]$W, [int]$H, [doub
 
 function New-WizardPage([string]$Title, [string]$Sub) {
     $p = New-Object System.Windows.Forms.Panel
-    $p.SetBounds(0, 0, 560, 470); $p.BackColor = $script:Theme.Bg; $p.Visible = $false
+    $p.SetBounds(0, 0, 560, 490); $p.BackColor = $script:Theme.Bg; $p.Visible = $false
     $p.AutoScroll = $true                                    # content taller than the window scrolls
     $p.Anchor = [System.Windows.Forms.AnchorStyles]'Top,Bottom,Left'
     $p.Add_MouseEnter({ param($s, $e) $s.Focus() })          # so the mouse wheel scrolls the page under the cursor
@@ -178,7 +314,7 @@ function New-InstallWizard($Cands, $All) {
     $f.Controls.Add($dots)
 
     $cont = New-Object System.Windows.Forms.Panel
-    $cont.SetBounds(20, 60, 560, 470); $cont.BackColor = $script:Theme.Bg
+    $cont.SetBounds(20, 60, 560, 490); $cont.BackColor = $script:Theme.Bg
     $cont.Anchor = [System.Windows.Forms.AnchorStyles]'Top,Bottom'       # keeps its width, centred; grows taller with the window
     $f.Controls.Add($cont)
     $wz.Cont = $cont
@@ -267,25 +403,30 @@ function New-InstallWizard($Cands, $All) {
     $wz.PanelVisible = $pv; $p3.Controls.Add($pv)
     # hidden-mode panel
     $ph = New-Object System.Windows.Forms.Panel
-    $ph.SetBounds(0, 84, 540, 430); $ph.BackColor = $script:Theme.Bg
+    $ph.SetBounds(0, 84, 540, 406); $ph.BackColor = $script:Theme.Bg
+    $ph.Anchor = [System.Windows.Forms.AnchorStyles]'Top,Bottom,Left'
     $ph.Controls.Add((New-WizardText 'שם הקובץ בשולחן העבודה' 0 0 540 22 10 $script:Theme.Muted))
     $wz.HidName = New-ThemedInput 0 24 540 $false
     $wz.HidName.Box.Text = 'System Console'
     $ph.Controls.Add($wz.HidName.Panel)
-    $ph.Controls.Add((New-WizardText 'בחרו אייקון' 0 82 540 22 10 $script:Theme.Muted))
-    $wz.Icons = @(Get-IconChoices)
+    $ph.Controls.Add((New-WizardText 'בחרו אייקון (גוללים לראות עוד)' 0 82 540 22 10 $script:Theme.Muted))
+    $wz.IconChips = New-ChipRow 0 106 540 32 $script:IconLabels
+    $ph.Controls.Add($wz.IconChips)
+    $grid = New-Object System.Windows.Forms.FlowLayoutPanel
+    $grid.SetBounds(0, 146, 540, 258); $grid.BackColor = $script:Theme.Bg
+    $grid.AutoScroll = $true; $grid.WrapContents = $true; $grid.FlowDirection = 'LeftToRight'; $grid.RightToLeft = 'Yes'
+    $grid.Anchor = [System.Windows.Forms.AnchorStyles]'Top,Bottom,Left,Right'
+    $grid.Add_MouseEnter({ param($s, $e) $s.Focus() })
+    $ph.Controls.Add($grid)
+    $wz.IconGrid = $grid
+    $wz.IconEmpty = New-WizardText 'לא נמצאו תוכנות מהסוג הזה במחשב. נסו קטגוריה אחרת.' 0 170 540 24 10 $script:Theme.Muted
+    $wz.IconEmpty.Visible = $false
+    $ph.Controls.Add($wz.IconEmpty)
     $wz.IconCards = New-Object System.Collections.ArrayList
-    $i = 0
-    foreach ($ic in $wz.Icons) {
-        $col = $i % 4; $row = [math]::Floor($i / 4)
-        $x = 540 - 2 - 128 - $col * 137
-        $card = New-Card $x (110 + $row * 100) 128 92 $ic.Name '' 'tile' ($i -eq 0) $ic.Image
-        $card.Tag.Group = $wz.IconCards
-        $card.Tag.OnSelect = { param($c) $script:wz.HidName.Box.Text = [string]$c.Tag.Title }
-        [void]$wz.IconCards.Add($card); $ph.Controls.Add($card)
-        $i++
-    }
-    if ($wz.Icons.Count -gt 0) { $wz.HidName.Box.Text = [string]$wz.Icons[0].Name }
+    $wz.IconCache = @{}
+    $wz.SelIcon = $null
+    $wz.IconChips.Tag.OnChange = { param($i) Show-IconCategory ([int]$i) }
+    Show-IconCategory 0
     $wz.PanelHidden = $ph; $p3.Controls.Add($ph)
     $cont.Controls.Add($p3)
     $wz.Enter[3] = {
@@ -356,7 +497,7 @@ function New-InstallWizard($Cands, $All) {
     $sum = New-Object System.Windows.Forms.TextBox
     $sum.Multiline = $true; $sum.ReadOnly = $true; $sum.BorderStyle = 'None'; $sum.ScrollBars = 'Vertical'
     $sum.Anchor = [System.Windows.Forms.AnchorStyles]'Top,Bottom,Left,Right'
-    $sum.SetBounds(0, 84, 540, 384); $sum.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $sum.SetBounds(0, 84, 540, 404); $sum.Font = New-Object System.Drawing.Font('Segoe UI', 10)
     $sum.BackColor = $script:Theme.Card; $sum.ForeColor = $script:Theme.Text
     $wz.Summary = $sum; $p6.Controls.Add($sum)
     $cont.Controls.Add($p6)
@@ -366,11 +507,11 @@ function New-InstallWizard($Cands, $All) {
     $p0.Visible = $true
 
     # footer
-    $wz.Msg = New-ThemedLabel '' 30 540 540 24 10 $script:Theme.Danger
+    $wz.Msg = New-ThemedLabel '' 30 552 540 24 10 $script:Theme.Danger
     $f.Controls.Add($wz.Msg)
-    $wz.Next = New-ThemedButton 'הבא' 395 580 175 50 'primary'
-    $wz.Back = New-ThemedButton 'חזרה' 210 580 175 50 'ghost'
-    $wz.Cancel = New-LinkLabel 'ביטול' 30 590 110 30 10
+    $wz.Next = New-ThemedButton 'הבא' 395 590 175 50 'primary'
+    $wz.Back = New-ThemedButton 'חזרה' 210 590 175 50 'ghost'
+    $wz.Cancel = New-LinkLabel 'ביטול' 30 600 110 30 10
     $wz.Cancel.Add_Click({ $script:wz.Form.DialogResult = 'Cancel' })
     $wz.Msg.Anchor = [System.Windows.Forms.AnchorStyles]'Bottom'
     $wz.Next.Anchor = [System.Windows.Forms.AnchorStyles]'Bottom'; $wz.Back.Anchor = [System.Windows.Forms.AnchorStyles]'Bottom'
@@ -500,13 +641,12 @@ function Get-WizardResult {
     $hid = [bool]$w.ModeCards[1].Tag.Selected
     $r = @{
         Adapter = $w.Cands[$idx]; Categories = $cats; Hidden = $hid; Hotkeys = [bool]$w.HotCard.Tag.Selected
-        Password = $w.Pw1.Box.Text; TwoAdmins = [bool]$w.TwoCard.Tag.Selected; Password2 = ''; Name = ''; OpenName = ''; LockName = ''; IconPath = ''
+        Password = $w.Pw1.Box.Text; TwoAdmins = [bool]$w.TwoCard.Tag.Selected; Password2 = ''; Name = ''; OpenName = ''; LockName = ''; IconSpec = ''
     }
     if ($r.TwoAdmins) { $r.Password2 = $w.Adm2Pw1.Box.Text }
     if ($hid) {
         $r.Name = $w.HidName.Box.Text.Trim()
-        $k = 0; foreach ($c in $w.IconCards) { if ($c.Tag.Selected) { $k = $w.IconCards.IndexOf($c) } }
-        if ($w.Icons.Count -gt 0) { $r.IconPath = [string]$w.Icons[$k].Path }
+        if ($w.SelIcon) { $r.IconSpec = [string]$w.SelIcon.Spec }
     } else {
         $r.OpenName = $w.OpenName.Box.Text.Trim(); $r.LockName = $w.LockName.Box.Text.Trim()
     }

@@ -159,6 +159,7 @@ function Select-Chip($Panel, [int]$Index) {
             $b.FlatAppearance.MouseOverBackColor = $script:Theme.CardHover; $b.FlatAppearance.MouseDownBackColor = $script:Theme.CardHover
         }
     }
+    if ($ctx.OnChange) { & $ctx.OnChange $Index }       # optional hook (set after creation)
 }
 
 function New-ChipRow([int]$X, [int]$Y, [int]$W, [int]$H, $Labels) {
