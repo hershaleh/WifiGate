@@ -22,6 +22,11 @@ $script:Theme = @{
     Ok          = (Rgb 74 222 128)
 }
 
+# The program icon (WifiGate.ico sits next to this file); used in title bars, the installer and the shortcut.
+$script:AppIconPath = Join-Path $PSScriptRoot 'WifiGate.ico'
+$script:AppIcon = $null
+try { if (Test-Path $script:AppIconPath) { $script:AppIcon = New-Object System.Drawing.Icon($script:AppIconPath) } } catch { }
+
 try {
     Add-Type -Namespace WG -Name Dwm -MemberDefinition '[System.Runtime.InteropServices.DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(System.IntPtr hwnd, int attr, ref int value, int size);'
 } catch { }
@@ -67,6 +72,7 @@ function New-ThemedForm([string]$Title, [int]$W, [int]$H) {
     $f.RightToLeft = 'Yes'; $f.RightToLeftLayout = $false
     $f.StartPosition = 'CenterScreen'; $f.FormBorderStyle = 'FixedDialog'
     $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.ShowIcon = $false
+    if ($script:AppIcon) { $f.Icon = $script:AppIcon; $f.ShowIcon = $true }
     $f.TopMost = $true
     $f.ClientSize = New-Object System.Drawing.Size($W, $H)
     $f.BackColor = $script:Theme.Bg; $f.ForeColor = $script:Theme.Text

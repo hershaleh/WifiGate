@@ -230,13 +230,20 @@ function Get-IconCategory([string]$Key) {
     return $list
 }
 
+# Sets the file-name box from code (does not count as the user's own edit).
+function Set-HidName([string]$Text) {
+    $w = $script:wz
+    $w.SettingName = $true
+    try { $w.HidName.Box.Text = $Text } finally { $w.SettingName = $false }
+}
+
 # Fills the scrolling icon grid with one category (selection is kept across categories).
 function Show-IconCategory([int]$Index) {
     $w = $script:wz
     $key = $script:IconKeys[$Index]
     if (-not $w.IconCache.ContainsKey($key)) { $w.IconCache[$key] = @(Get-IconCategory $key) }
     $items = @($w.IconCache[$key])
-    if ($null -eq $w.SelIcon -and $items.Count -gt 0) { $w.SelIcon = $items[0]; $w.HidName.Box.Text = [string]$items[0].Name }
+    if ($null -eq $w.SelIcon -and $items.Count -gt 0) { $w.SelIcon = $items[0]; Set-HidName ([string]$items[0].Name) }
     $g = $w.IconGrid
     $g.SuspendLayout()
     foreach ($c in @($g.Controls)) { $g.Controls.Remove($c); $c.Dispose() }
@@ -250,7 +257,7 @@ function Show-IconCategory([int]$Index) {
         $card.Tag.OnSelect = {
             param($c)
             $w2 = $script:wz; $w2.SelIcon = $c.Tag.Item
-            if ($c.Tag.Item.AutoName) { $w2.HidName.Box.Text = [string]$c.Tag.Item.Name }
+            if ($c.Tag.Item.AutoName -and -not $w2.NameEdited) { Set-HidName ([string]$c.Tag.Item.Name) }   # never overwrite a name the user typed
         }
         [void]$w.IconCards.Add($card); $g.Controls.Add($card)
     }
@@ -377,7 +384,7 @@ function New-InstallWizard($Cands, $All) {
     # ---- page 2: access mode ----
     $p2 = New-WizardPage 'איך תפעילו את החסימה' 'בחרו איך ייראו נקודות הכניסה במחשב.'
     $wz.ModeCards = New-Object System.Collections.ArrayList
-    $mv = New-Card 2 84 520 118 'מצב גלוי' "קבצים רגילים בשולחן העבודה עם שמות ברורים:`nפתיחת Wi-Fi (חלון עם סיסמה) ונעילת Wi-Fi (מיידית).`nבתפריט התחל: בדיקות ושחזור." 'radio' $true
+    $mv = New-Card 2 84 520 118 'מצב גלוי' "קובץ אחד בשולחן העבודה, עם האייקון הרשמי של WifiGate והשם הרגיל.`nבפתיחה: כפתור השבתה גלוי לכולם, ושאר האפשרויות (פתיחה, הגדרות, בדיקות, שחזור) רק אחרי סיסמה." 'radio' $true
     $mh = New-Card 2 212 520 118 'מצב מוסתר' "קובץ אחד עם אייקון תמים שנראה כמו תוכנה רגילה.`nנפתח חלון טרמינל שחור עם כיתובים חסרי פשר, בלי שום אפשרויות.`nמקשים 1-4 (שלא מוצגים) פותחים, נועלים, בודקים ומשחזרים." 'radio' $false
     foreach ($m in @($mv, $mh)) { $m.Tag.Group = $wz.ModeCards; [void]$wz.ModeCards.Add($m); $p2.Controls.Add($m) }
     $wz.HotCard = New-Card 2 344 520 64 'קיצורי מקשים' 'Ctrl+Alt+P לפתיחה, Ctrl+Alt+X לנעילה (מופיעים בתפריט התחל)' 'check' $true
@@ -390,24 +397,31 @@ function New-InstallWizard($Cands, $All) {
     # visible-mode panel
     $pv = New-Object System.Windows.Forms.Panel
     $pv.SetBounds(0, 84, 540, 300); $pv.BackColor = $script:Theme.Bg
-    $pv.Controls.Add((New-WizardText 'שם קובץ הפתיחה' 0 0 540 22 10 $script:Theme.Muted))
+    $pv.Controls.Add((New-WizardText 'שם הקובץ בשולחן העבודה' 0 0 540 22 10 $script:Theme.Muted))
     $wz.OpenName = New-ThemedInput 0 24 540 $false
-    $wz.OpenName.Box.Text = 'פתיחת Wi-Fi'
-    $wz.OpenName.Box.RightToLeft = 'Yes'
+    $wz.OpenName.Box.Text = 'WifiGate'
     $pv.Controls.Add($wz.OpenName.Panel)
-    $pv.Controls.Add((New-WizardText 'שם קובץ הנעילה' 0 90 540 22 10 $script:Theme.Muted))
-    $wz.LockName = New-ThemedInput 0 114 540 $false
-    $wz.LockName.Box.Text = 'נעילת Wi-Fi'
-    $wz.LockName.Box.RightToLeft = 'Yes'
-    $pv.Controls.Add($wz.LockName.Panel)
+    $ico = New-Object System.Windows.Forms.Panel
+    $ico.SetBounds(444, 96, 96, 96); $ico.BackColor = $script:Theme.Bg
+    Set-DoubleBuffered $ico
+    $ico.Add_Paint({
+        param($s, $e)
+        if ($script:AppIcon) {
+            try { $big = New-Object System.Drawing.Icon($script:AppIconPath, 128, 128); $e.Graphics.InterpolationMode = 'HighQualityBicubic'; $e.Graphics.DrawImage($big.ToBitmap(), 0, 0, 96, 96); $big.Dispose() } catch { }
+        }
+    })
+    $pv.Controls.Add($ico)
+    $pv.Controls.Add((New-WizardText 'האייקון הרשמי של התוכנה. השם נשאר WifiGate אלא אם תשנו אותו.' 0 100 430 40 10 $script:Theme.Muted))
     $wz.PanelVisible = $pv; $p3.Controls.Add($pv)
     # hidden-mode panel
     $ph = New-Object System.Windows.Forms.Panel
     $ph.SetBounds(0, 84, 540, 406); $ph.BackColor = $script:Theme.Bg
     $ph.Anchor = [System.Windows.Forms.AnchorStyles]'Top,Bottom,Left'
-    $ph.Controls.Add((New-WizardText 'שם הקובץ בשולחן העבודה' 0 0 540 22 10 $script:Theme.Muted))
+    $ph.Controls.Add((New-WizardText 'שם הקובץ שייווצר בשולחן העבודה (אפשר לכתוב כל שם)' 0 0 540 22 10 $script:Theme.Muted))
     $wz.HidName = New-ThemedInput 0 24 540 $false
     $wz.HidName.Box.Text = 'System Console'
+    $wz.NameEdited = $false; $wz.SettingName = $false
+    $wz.HidName.Box.Add_TextChanged({ if (-not $script:wz.SettingName) { $script:wz.NameEdited = $true } })
     $ph.Controls.Add($wz.HidName.Panel)
     $ph.Controls.Add((New-WizardText 'בחרו אייקון (גוללים לראות עוד)' 0 82 540 22 10 $script:Theme.Muted))
     $wz.IconChips = New-ChipRow 0 106 540 32 $script:IconLabels
@@ -612,10 +626,9 @@ function Test-WizardPage([int]$Index) {
                 if (-not $n) { return 'הקלידו שם לקובץ.' }
                 if ($n.IndexOfAny($bad.ToCharArray()) -ge 0) { return 'השם מכיל תווים אסורים בשם קובץ.' }
             } else {
-                $a = $w.OpenName.Box.Text.Trim(); $b = $w.LockName.Box.Text.Trim()
-                if (-not $a -or -not $b) { return 'הקלידו שם לכל אחד מהקבצים.' }
-                if ($a -eq $b) { return 'שני השמות חייבים להיות שונים.' }
-                if ($a.IndexOfAny($bad.ToCharArray()) -ge 0 -or $b.IndexOfAny($bad.ToCharArray()) -ge 0) { return 'השם מכיל תווים אסורים בשם קובץ.' }
+                $a = $w.OpenName.Box.Text.Trim()
+                if (-not $a) { return 'הקלידו שם לקובץ.' }
+                if ($a.IndexOfAny($bad.ToCharArray()) -ge 0) { return 'השם מכיל תווים אסורים בשם קובץ.' }
             }
         }
         4 {
@@ -641,14 +654,14 @@ function Get-WizardResult {
     $hid = [bool]$w.ModeCards[1].Tag.Selected
     $r = @{
         Adapter = $w.Cands[$idx]; Categories = $cats; Hidden = $hid; Hotkeys = [bool]$w.HotCard.Tag.Selected
-        Password = $w.Pw1.Box.Text; TwoAdmins = [bool]$w.TwoCard.Tag.Selected; Password2 = ''; Name = ''; OpenName = ''; LockName = ''; IconSpec = ''
+        Password = $w.Pw1.Box.Text; TwoAdmins = [bool]$w.TwoCard.Tag.Selected; Password2 = ''; Name = ''; IconSpec = ''
     }
     if ($r.TwoAdmins) { $r.Password2 = $w.Adm2Pw1.Box.Text }
     if ($hid) {
         $r.Name = $w.HidName.Box.Text.Trim()
         if ($w.SelIcon) { $r.IconSpec = [string]$w.SelIcon.Spec }
     } else {
-        $r.OpenName = $w.OpenName.Box.Text.Trim(); $r.LockName = $w.LockName.Box.Text.Trim()
+        $r.Name = $w.OpenName.Box.Text.Trim()
     }
     return $r
 }
@@ -664,7 +677,7 @@ function Get-WizardSummary {
     if ($r.Hidden) {
         $t += 'גישה (מצב מוסתר):' + $nl + "  • קובץ אחד בשולחן העבודה: '" + $r.Name + "'" + $nl + '  • נפתח טרמינל שחור עם כיתובים חסרי פשר. מקשים: 1 פתיחה, 2 נעילה, 3 בדיקות, 4 שחזור' + $nl
     } else {
-        $t += 'גישה (מצב גלוי):' + $nl + "  • בשולחן העבודה: '" + $r.OpenName + "' ו-'" + $r.LockName + "'" + $nl + '  • בתפריט התחל: בדיקות ושחזור' + $nl
+        $t += 'גישה (מצב גלוי):' + $nl + "  • קובץ אחד בשולחן העבודה: '" + $r.Name + "' עם האייקון הרשמי" + $nl + '  • בפתיחה: כפתור השבתה גלוי. פתיחה, הגדרות, בדיקות ושחזור רק עם סיסמה' + $nl
     }
     if ($r.TwoAdmins) { $t += $nl + 'שני מנהלים: כל פתיחה, שחזור ושינוי הגדרות דורשים את הסיסמה של שניהם. כל מנהל מקבל קוד שחזור משלו.' + $nl }
     if ($r.Hotkeys) { $t += '  • קיצורי מקשים: Ctrl+Alt+P פתיחה, Ctrl+Alt+X נעילה' + $nl }

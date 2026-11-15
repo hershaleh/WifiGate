@@ -22,6 +22,7 @@ jobs:
           $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
           & $csc /nologo /target:winexe /platform:anycpu /out:build\WifiGateSetup.exe `
             /win32manifest:installer\app.manifest `
+            /win32icon:WifiGate\src\WifiGate.ico `
             /resource:build\payload.zip,payload.zip `
             /reference:System.Windows.Forms.dll /reference:System.IO.Compression.FileSystem.dll /reference:System.IO.Compression.dll `
             installer\Launcher.cs

@@ -606,3 +606,99 @@ function Show-StatsDialog {
     $f = New-StatsForm
     [void]$f.ShowDialog(); $f.Dispose()
 }
+
+
+# ---------- visible mode: the single entry window ("Home") ----------
+# A big visible "disable Wi-Fi" button (no password: locking is always allowed); everything else is behind the password.
+
+function Update-HomeView {
+    $h = $script:home
+    $st = Get-StateInfo
+    if ($st.Locked) {
+        $h.Status.Text = 'ה-Wi-Fi מושבת'; $h.Status.ForeColor = $script:Theme.Danger
+        $h.Disable.Text = 'מושבת'; $h.Disable.Enabled = $false
+        $h.Disable.BackColor = $script:Theme.Card; $h.Disable.ForeColor = $script:Theme.Muted
+    } else {
+        $h.Status.Text = 'ה-Wi-Fi פעיל'; $h.Status.ForeColor = $script:Theme.Ok
+        $h.Disable.Text = 'השבת Wi-Fi'; $h.Disable.Enabled = $true
+        $h.Disable.BackColor = $script:Theme.Danger; $h.Disable.ForeColor = $script:Theme.DangerText
+    }
+}
+
+function Start-WifiGateWindow([string]$Script) {
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Start-Process -FilePath $ps -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ('"' + (Join-Path $PSScriptRoot $Script) + '"'))
+}
+
+function New-OptionsForm {
+    $f = New-ThemedForm 'WifiGate - אפשרויות' 360 330
+    $f.Controls.Add((New-ThemedLabel 'אפשרויות נוספות' 20 14 320 34 16 $script:Theme.Text $true))
+    $o = @{ Form = $f }
+    $script:opt = $o
+    $o.Open = New-ThemedButton 'פתיחת Wi-Fi והגדרות' 30 62 300 52 'primary'
+    $o.Tests = New-ThemedButton 'בדיקות' 30 126 300 46 'ghost'
+    $o.Recovery = New-ThemedButton 'שחזור והסרה' 30 184 300 46 'ghost'
+    $o.Back = New-ThemedButton 'חזרה' 30 248 300 44 'ghost'
+    foreach ($b in @($o.Open, $o.Tests, $o.Recovery, $o.Back)) { $f.Controls.Add($b) }
+    $o.Open.Add_Click({ Start-WifiGateWindow 'Unlock-UI.ps1'; $script:opt.Form.DialogResult = 'Abort' })
+    $o.Tests.Add_Click({ Start-WifiGateWindow 'Tests.ps1'; $script:opt.Form.DialogResult = 'Abort' })
+    $o.Recovery.Add_Click({ Start-WifiGateWindow 'Recovery.ps1'; $script:opt.Form.DialogResult = 'Abort' })
+    $o.Back.Add_Click({ $script:opt.Form.DialogResult = 'Cancel' })
+    $f.CancelButton = $o.Back
+    return $f
+}
+
+function New-HomeForm {
+    $h = @{ Busy = $false }
+    $script:home = $h
+    $f = New-ThemedForm 'WifiGate' 360 470
+    $f.TopMost = $false; $f.MinimizeBox = $true
+    $h.Form = $f
+    # program icon, large
+    $pic = New-Object System.Windows.Forms.Panel
+    $pic.SetBounds(132, 22, 96, 96); $pic.BackColor = $script:Theme.Bg
+    Set-DoubleBuffered $pic
+    $pic.Add_Paint({
+        param($s, $e)
+        if ($script:AppIcon) {
+            try {
+                $big = New-Object System.Drawing.Icon($script:AppIconPath, 128, 128)
+                $e.Graphics.InterpolationMode = 'HighQualityBicubic'
+                $e.Graphics.DrawImage($big.ToBitmap(), 0, 0, 96, 96); $big.Dispose()
+            } catch { }
+        }
+    })
+    $f.Controls.Add($pic)
+    $f.Controls.Add((New-ThemedLabel 'WifiGate' 20 128 320 36 20 $script:Theme.Text $true 'MiddleCenter'))
+    $h.Status = New-ThemedLabel '' 20 168 320 26 11 $script:Theme.Muted $false 'MiddleCenter'
+    $f.Controls.Add($h.Status)
+    $h.Disable = New-ThemedButton 'השבת Wi-Fi' 30 214 300 66 'danger'
+    $h.Disable.Font = New-Object System.Drawing.Font('Segoe UI', 14, [System.Drawing.FontStyle]::Bold)
+    $f.Controls.Add($h.Disable)
+    $h.More = New-ThemedButton 'אפשרויות נוספות (בסיסמה)' 30 296 300 52 'ghost'
+    $f.Controls.Add($h.More)
+    $h.Msg = New-ThemedLabel '' 20 360 320 40 9.5 $script:Theme.Danger $false 'MiddleCenter'
+    $f.Controls.Add($h.Msg)
+    $f.Controls.Add((New-ThemedLabel 'השבתה זמינה לכולם. פתיחה והגדרות רק עם סיסמה.' 20 420 320 28 9 $script:Theme.Muted $false 'MiddleCenter'))
+
+    $h.Disable.Add_Click({
+        $x = $script:home
+        try { Invoke-Lock; $x.Msg.ForeColor = $script:Theme.Muted; $x.Msg.Text = 'ה-Wi-Fi הושבת.' }
+        catch { Write-Log "home lock error: $($_.Exception.Message)"; $x.Msg.ForeColor = $script:Theme.Danger; $x.Msg.Text = 'שגיאה בהשבתה.' }
+        Update-HomeView
+    })
+    $h.More.Add_Click({
+        $x = $script:home
+        $x.Msg.Text = ''
+        $pw = Read-SecretDialog 'כניסה לאפשרויות: הזינו את הסיסמה.'
+        if ($null -eq $pw) { return }
+        $r = Test-AuthSecret $pw $false
+        if (-not $r.Ok) { $x.Msg.ForeColor = $script:Theme.Danger; $x.Msg.Text = $r.Message; return }
+        $of = New-OptionsForm
+        $res = $of.ShowDialog(); $of.Dispose()
+        if ([string]$res -eq 'Abort') { $x.Form.Close() }
+    })
+    $f.Add_Shown({ Update-HomeView })
+    Update-HomeView
+    return $f
+}

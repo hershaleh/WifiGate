@@ -25,9 +25,11 @@ static class Launcher
             var psi = new ProcessStartInfo
             {
                 FileName = Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe"),
-                Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\"",
+                Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + script + "\"",
                 WorkingDirectory = Path.GetDirectoryName(script),
-                UseShellExecute = false
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
             };
             using (Process p = Process.Start(psi))
             {

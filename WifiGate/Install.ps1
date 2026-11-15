@@ -120,24 +120,20 @@ $progs = [Environment]::GetFolderPath('Programs')
 $made = @(); $folders = @()
 $openHk = ''; $lockHk = ''
 if ($ch.Hotkeys) { $openHk = 'CTRL+ALT+P'; $lockHk = 'CTRL+ALT+X' }
+$appIcon = (Join-Path $script:ProgDir 'WifiGate.ico') + ',0'
 if ($ch.Hidden) {
     $icon = 'imageres.dll,11'
     if ($ch.IconSpec) { $icon = $ch.IconSpec }
     New-GateShortcut $desk $ch.Name 'Console.ps1' $icon '' $false
-    $made += (Join-Path $desk ($ch.Name + '.lnk'))
-    if ($ch.Hotkeys) {
-        $hk = Join-Path $progs $ch.Name
-        New-GateShortcut $hk 'Open'  'Unlock-UI.ps1' $icon $openHk
-        New-GateShortcut $hk 'Close' 'Lock.ps1'      $icon $lockHk
-        $folders += $hk
-    }
 } else {
-    New-GateShortcut $desk $ch.OpenName 'Unlock-UI.ps1' 'shell32.dll,44' $openHk
-    New-GateShortcut $desk $ch.LockName 'Lock.ps1'      'shell32.dll,47' $lockHk
-    $made += (Join-Path $desk ($ch.OpenName + '.lnk')); $made += (Join-Path $desk ($ch.LockName + '.lnk'))
-    $hk = Join-Path $progs 'WifiGate'
-    New-GateShortcut $hk 'בדיקות' 'Tests.ps1' 'shell32.dll,23'
-    New-GateShortcut $hk 'שחזור והסרה' 'Recovery.ps1' 'shell32.dll,21'
+    $icon = $appIcon                                                  # visible mode: the official icon, one file
+    New-GateShortcut $desk $ch.Name 'Home.ps1' $icon '' $true
+}
+$made += (Join-Path $desk ($ch.Name + '.lnk'))
+if ($ch.Hotkeys) {
+    $hk = Join-Path $progs $ch.Name
+    New-GateShortcut $hk 'Open'  'Unlock-UI.ps1' $icon $openHk
+    New-GateShortcut $hk 'Close' 'Lock.ps1'      $icon $lockHk
     $folders += $hk
 }
 Set-ConfigValue 'Shortcuts' @($made)
@@ -190,7 +186,7 @@ Set-Progress 'מסיים...' 1.0
 try { $pfm.Close() } catch { }
 
 # ---- 7. final confirmation, then activate ----
-if ($ch.Hidden) { $how = "לפתיחה: הקובץ '$($ch.Name)' בשולחן העבודה, ואז 1" } else { $how = "לפתיחה: הקובץ '$($ch.OpenName)' בשולחן העבודה" }
+if ($ch.Hidden) { $how = "לפתיחה: הקובץ '$($ch.Name)' בשולחן העבודה, ואז 1" } else { $how = "לפתיחה: הקובץ '$($ch.Name)' בשולחן העבודה, ואז 'אפשרויות נוספות' עם הסיסמה" }
 $go = Show-Message "הבדיקה העצמית עברה: נעילה, פתיחה בסיסמה ושחזור בקוד עובדים.`n`nלהפעיל את החסימה עכשיו? ה-Wi-Fi ייחסם עד שתזינו סיסמה ($how)." 'WifiGate' 'YesNo' 'Question'
 if ($go -ne 'Yes') {
     Invoke-Uninstall

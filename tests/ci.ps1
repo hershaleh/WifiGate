@@ -201,17 +201,23 @@ try {
     Check 'icons: system offers at least 3' (@(Get-IconCategory 'system').Count -ge 3)
     Check 'icons: folders offers at least 5' (@(Get-IconCategory 'folders').Count -ge 5)
     Check 'icons: variety offers at least 30' (@(Get-IconCategory 'variety').Count -ge 30)
+    Check 'app icon file exists and loads' (($null -ne $script:AppIcon) -and (Test-Path $script:AppIconPath))
     Check 'wizard: default icon selected' ($null -ne $script:wz.SelIcon)
     Check 'wizard: result has an icon spec' ((Get-WizardResult).IconSpec -match ',\d+$') ((Get-WizardResult).IconSpec)
     $script:wz.HidName.Box.Text = 'a:b'
     Check 'wizard: forbidden file-name characters refused' ([bool](Test-WizardPage 3))
     $script:wz.ModeCards[0].Tag.Selected = $true; $script:wz.ModeCards[1].Tag.Selected = $false
-    $script:wz.OpenName.Box.Text = 'x'; $script:wz.LockName.Box.Text = 'x'
-    Check 'wizard: identical visible names refused' ([bool](Test-WizardPage 3))
-    $script:wz.LockName.Box.Text = 'y'
-    Check 'wizard: visible names accepted' (-not (Test-WizardPage 3))
+    $script:wz.OpenName.Box.Text = ''
+    Check 'wizard: empty visible name refused' ([bool](Test-WizardPage 3))
+    $script:wz.OpenName.Box.Text = 'WifiGate'
+    Check 'wizard: visible name accepted' (-not (Test-WizardPage 3))
+    Check 'wizard: visible default name is WifiGate' ((Get-WizardResult).Name -eq 'WifiGate')
+    $script:wz.NameEdited = $false
+    Set-HidName 'Auto'; Check 'wizard: programmatic name does not count as an edit' (-not $script:wz.NameEdited)
+    $script:wz.HidName.Box.Text = 'MyName'
+    Check 'wizard: typed name counts as an edit' ($script:wz.NameEdited)
     $wsum = Get-WizardSummary
-    Check 'wizard: summary lists adapter and names' (($wsum -match 'Realtek USB') -and ($wsum -match 'x') -and ($wsum -match 'Bluetooth'))
+    Check 'wizard: summary lists adapter and names' (($wsum -match 'Realtek USB') -and ($wsum -match 'WifiGate') -and ($wsum -match 'Bluetooth'))
     Check 'wizard: second admin off needs nothing' (-not (Test-WizardPage 5))
     $script:wz.TwoCard.Tag.Selected = $true
     $script:wz.Adm2Pw1.Box.Text = 'short'
@@ -354,6 +360,10 @@ try {
     Set-WizardPage 6 $true; Shot $wzf 'wiz-6-summary' $true
     Check 'wizard: last page button says install' ($script:wz.Next.Text -eq 'התקנה')
     $wzf.Close(); $wzf.Dispose()
+    $hf = New-HomeForm
+    Shot $hf 'home-window'
+    $of = New-OptionsForm
+    Shot $of 'home-options'
     $pfm = New-ProgressForm
     Set-Progress 'בדיקה עצמית: פתיחה בסיסמה...' 0.65
     Shot $pfm 'progress'

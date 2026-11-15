@@ -1,3 +1,3 @@
 ﻿@echo off
 rem WifiGate installer launcher. Double-click this file (after extracting the ZIP).
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install.ps1"
+start "" /b powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0Install.ps1"
