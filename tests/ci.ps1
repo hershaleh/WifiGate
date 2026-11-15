@@ -103,24 +103,24 @@ try {
     foreach ($cand in @(Get-NetAdapter | Where-Object Status -eq 'Up')) {
         try {
             Write-Json $script:ConfigFile ([pscustomobject]@{ AdapterGuid = [string]$cand.InterfaceGuid })
-            Get-BlockRules | Remove-NetFirewallRule
+            Remove-BlockRules
             Update-BlockRules
             $okNic = $cand; break
-        } catch { L ("INFO rules failed for $($cand.Name): " + $_.Exception.Message); Get-BlockRules | Remove-NetFirewallRule }
+        } catch { L ("INFO rules failed for $($cand.Name): " + $_.Exception.Message); Remove-BlockRules }
     }
     Check 'block rules created on a real adapter' ($null -ne $okNic)
     if ($okNic) {
         $rp = Get-BlockRulesProblem
         Check 'block rules valid (2 adapter + 2 wireless rules)' (-not $rp) $rp
-        Check 'four rules exist' (@(Get-BlockRules).Count -eq 4)
-        $tr = @(Get-BlockRules | Where-Object { $_.DisplayName -like '*Wireless*' } | Get-NetFirewallInterfaceTypeFilter)
+        Check 'four core rules exist' (@(Get-CoreRules).Count -eq 4)
+        $tr = @(Get-CoreRules | Where-Object { $_.DisplayName -like '*Wireless*' } | Get-NetFirewallInterfaceTypeFilter)
         Check 'wireless rules filter interface type Wireless' (($tr.Count -eq 2) -and (@($tr | Where-Object { [string]$_.InterfaceType -ne 'Wireless' }).Count -eq 0))
-        Get-BlockRules | Select-Object -First 1 | Remove-NetFirewallRule
+        Get-CoreRules | Select-Object -First 1 | Remove-NetFirewallRule
         Check 'missing rule is detected' ([bool](Get-BlockRulesProblem))
         Update-BlockRules
         Check 'Update-BlockRules repairs a deleted rule' (-not (Get-BlockRulesProblem))
         Update-BlockRules
-        Check 'Update-BlockRules is idempotent (still 4 rules)' (@(Get-BlockRules).Count -eq 4)
+        Check 'Update-BlockRules is idempotent (still 4 core rules)' (@(Get-CoreRules).Count -eq 4)
         Set-DisabledByUs @('aaaa')
         Check 'disabled list round-trips' ((@(Get-DisabledByUs) -join ',') -eq 'aaaa')
         Clear-WifiBlock

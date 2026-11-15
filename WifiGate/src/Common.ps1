@@ -16,6 +16,7 @@ $script:LogFile      = Join-Path $script:DataDir 'wifigate.log'
 $script:DisabledFile = Join-Path $script:DataDir 'disabled.json'   # adapters this tool turned off
 $script:UsageFile    = Join-Path $script:DataDir 'usage.jsonl'     # unlock/lock history for the statistics screen
 $script:RuleGroup    = 'WifiGate'
+$script:ExtraFile   = Join-Path $script:DataDir 'extras.txt'     # which extra adapters the 'WifiGate extra' rules cover
 $script:Iterations   = 200000
 $script:DeskName     = 'System Console'     # the single Desktop shortcut
 $script:StartFolder  = 'System Console'     # Start-menu folder holding the two hotkey shortcuts
@@ -238,8 +239,21 @@ function Set-DisabledByUs($Guids) { Write-Json $script:DisabledFile ([pscustomob
 
 # ---------- firewall block ----------
 
+# 'WifiGate block *' = core rules (chosen adapter + any wireless interface). 'WifiGate extra *' = rules for the other chosen adapters.
 function Get-BlockRules {
-    return @(Get-NetFirewallRule -DisplayName 'WifiGate block*' -ErrorAction SilentlyContinue)
+    return @(Get-NetFirewallRule -DisplayName 'WifiGate block*', 'WifiGate extra*' -ErrorAction SilentlyContinue)
+}
+function Get-CoreRules { return @(Get-BlockRules | Where-Object { $_.DisplayName -like 'WifiGate block*' }) }
+
+# Removing a rule that mentions an adapter which has since disappeared can throw "interface not found": fall back to netsh.
+function Remove-BlockRules([string]$Like = '*') {
+    foreach ($r in @(Get-BlockRules | Where-Object { $_.DisplayName -like $Like })) {
+        try { $r | Remove-NetFirewallRule -ErrorAction Stop }
+        catch {
+            Write-Log "remove rule '$($r.DisplayName)' failed: $($_.Exception.Message) - using netsh"
+            try { & netsh.exe advfirewall firewall delete rule name="$($r.DisplayName)" | Out-Null } catch { }
+        }
+    }
 }
 
 # Windows Firewall may store the interface filter either as the alias (name) or as the adapter's LUID number.
@@ -254,8 +268,8 @@ function Get-AdapterFilterIds($Adapter) {
 # Returns $null when the block rules are correct, otherwise a text describing what is wrong.
 # Expected: 2 alias rules (in/out) covering every target adapter + 2 "any wireless interface" rules (in/out).
 function Get-BlockRulesProblem([string]$Alias = '') {
-    $targets = @(Get-BlockTargets)
-    $rules = @(Get-BlockRules)
+    $targets = @(Get-WifiAdapter)                 # the core rules must cover the chosen adapter; extras are checked by Update-BlockRules
+    $rules = @(Get-CoreRules)
     $aliasRules = @($rules | Where-Object { $_.DisplayName -notlike '*Wireless*' })
     $typeRules  = @($rules | Where-Object { $_.DisplayName -like '*Wireless*' })
     if ($aliasRules.Count -ne 2 -or $typeRules.Count -ne 2) { return "נמצאו $($aliasRules.Count) כללי מתאם ו-$($typeRules.Count) כללי אלחוט, ציפיתי ל-2 ו-2" }
@@ -286,25 +300,57 @@ function Get-BlockRulesProblem([string]$Alias = '') {
 function Test-BlockRulesValid([string]$Alias = '') { return (-not (Get-BlockRulesProblem $Alias)) }
 
 # Creates/repairs the firewall rules only (no adapter changes). Idempotent.
-function Update-BlockRules {
-    Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True
-    if (-not (Get-BlockRulesProblem)) { return }
-    Get-BlockRules | Remove-NetFirewallRule
-    $aliases = @(Get-BlockTargets | ForEach-Object { [string]$_.Name })
-    $desc = 'WifiGate: blocks all traffic on wireless/cellular interfaces until unlocked.'
+function Get-ExtraAliases {
+    $p = Get-WifiAdapter
+    return @(Get-BlockTargets | Where-Object { [string]$_.InterfaceGuid -ne [string]$p.InterfaceGuid } | ForEach-Object { [string]$_.Name } | Sort-Object)
+}
+
+function New-ExtraRules($Extra) {
+    $desc = 'WifiGate: blocks all traffic on the extra selected adapters until unlocked.'
     foreach ($d in 'Outbound', 'Inbound') {
         try {
-            New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup -Description $desc `
-                -Direction $d -Action Block -InterfaceAlias $aliases -Profile Any -Enabled True | Out-Null
+            New-NetFirewallRule -DisplayName ('WifiGate extra ' + $d) -Group $script:RuleGroup -Description $desc `
+                -Direction $d -Action Block -InterfaceAlias $Extra -Profile Any -Enabled True -ErrorAction Stop | Out-Null
         } catch {
-            Write-Log "alias rule failed for [$($aliases -join ',')]: $($_.Exception.Message) - falling back to the chosen adapter only"
-            New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup -Description $desc `
-                -Direction $d -Action Block -InterfaceAlias $aliases[0] -Profile Any -Enabled True | Out-Null
+            Write-Log "extra rule for [$($Extra -join ',')] failed: $($_.Exception.Message) - trying one adapter at a time"
+            $i = 0
+            foreach ($al in $Extra) {
+                $i++
+                try {
+                    New-NetFirewallRule -DisplayName ("WifiGate extra $d $i") -Group $script:RuleGroup -Description $desc `
+                        -Direction $d -Action Block -InterfaceAlias $al -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+                } catch { Write-Log "extra rule skipped for '$al' (the adapter is still turned off): $($_.Exception.Message)" }
+            }
         }
-        New-NetFirewallRule -DisplayName ('WifiGate block Wireless ' + $d) -Group $script:RuleGroup -Description $desc `
-            -Direction $d -Action Block -InterfaceType Wireless -Profile Any -Enabled True | Out-Null
     }
-    Write-Log "firewall rules (re)created for: $($aliases -join ', ')"
+}
+
+function Update-BlockRules {
+    Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True
+    $extra = @(Get-ExtraAliases)
+    $sig = ($extra -join '|')
+    $oldSig = ''
+    if (Test-Path $script:ExtraFile) { $oldSig = [string](Get-Content -Path $script:ExtraFile -Raw -ErrorAction SilentlyContinue) }
+    $oldSig = $oldSig.Trim()
+    $coreOk = -not (Get-BlockRulesProblem)
+    if ($coreOk -and $oldSig -eq $sig) { return }
+    if (-not $coreOk) {
+        Remove-BlockRules
+        $p = Get-WifiAdapter
+        $desc = 'WifiGate: blocks all traffic on wireless/cellular interfaces until unlocked.'
+        foreach ($d in 'Outbound', 'Inbound') {
+            New-NetFirewallRule -DisplayName ('WifiGate block ' + $d) -Group $script:RuleGroup -Description $desc `
+                -Direction $d -Action Block -InterfaceAlias ([string]$p.Name) -Profile Any -Enabled True | Out-Null
+            New-NetFirewallRule -DisplayName ('WifiGate block Wireless ' + $d) -Group $script:RuleGroup -Description $desc `
+                -Direction $d -Action Block -InterfaceType Wireless -Profile Any -Enabled True | Out-Null
+        }
+        Write-Log "core firewall rules (re)created for: $($p.Name)"
+    } else {
+        Remove-BlockRules 'WifiGate extra*'
+    }
+    if ($extra.Count -gt 0) { New-ExtraRules $extra }
+    Set-Content -Path $script:ExtraFile -Value $sig -Encoding UTF8        # remembered even if a rule failed: no retry loop every minute
+    Write-Log "extra adapters covered: [$sig]"
 }
 
 # Idempotent: makes sure the block is in place (rules + target adapters turned off).
@@ -330,7 +376,8 @@ function Set-WifiBlock {
 }
 
 function Clear-WifiBlock {
-    Get-BlockRules | Remove-NetFirewallRule
+    Remove-BlockRules
+    Remove-Item -Path $script:ExtraFile -Force -ErrorAction SilentlyContinue
     $a = Get-WifiAdapter
     if ($a.Status -eq 'Disabled') { Enable-NetAdapter -Name $a.Name -Confirm:$false }
     foreach ($g in @(Get-DisabledByUs)) {
@@ -591,7 +638,7 @@ function Invoke-Uninstall {
         Unregister-ScheduledTask -TaskName $n -Confirm:$false -ErrorAction SilentlyContinue
     }
     try { Clear-WifiBlock } catch {
-        Get-BlockRules | Remove-NetFirewallRule
+        Remove-BlockRules
     }
     $cfg = Read-Json $script:ConfigFile                      # shortcuts chosen at install time (names can be custom)
     foreach ($p in @(Get-Prop $cfg 'Shortcuts' @())) { Remove-Item -LiteralPath ([string]$p) -Force -ErrorAction SilentlyContinue }

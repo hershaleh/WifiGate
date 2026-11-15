@@ -173,13 +173,18 @@ try {
     if (-not $r.Ok) { throw 'שחזור בקוד נכשל בבדיקה.' }
     if (@(Get-BlockRules).Count -ne 0) { throw 'השחזור לא הסיר את הכללים.' }
     if ((Get-WifiAdapter).Status -eq 'Disabled') { throw 'השחזור לא הפעיל את המתאם.' }
-} catch { $fail = $_.Exception.Message }
+} catch { $fail = $_.Exception.Message + "`n[" + $_.InvocationInfo.ScriptName + ':' + $_.InvocationInfo.ScriptLineNumber + '] ' + $_.InvocationInfo.Line.Trim() }
 finally { Unregister-ScheduledTask -TaskName 'WifiGate-TrialFailsafe' -Confirm:$false -ErrorAction SilentlyContinue }
 
 if ($fail) {
     try { $pfm.Close() } catch { }
+    try {                                                                # keep the technical details: the uninstall below deletes the log
+        $logTail = ''
+        if (Test-Path $script:LogFile) { $logTail = (Get-Content -Path $script:LogFile -Tail 40 -ErrorAction SilentlyContinue) -join "`r`n" }
+        ($fail + "`r`n`r`n--- log ---`r`n" + $logTail) | Set-Content -Path (Join-Path ([Environment]::GetFolderPath('Desktop')) 'WifiGate-error.txt') -Encoding UTF8
+    } catch { }
     try { Invoke-Uninstall } catch { }
-    Stop-Install "הבדיקה העצמית נכשלה: $fail`n`nהכל הוחזר לקדמותו וה-Wi-Fi פתוח. החסימה לא הופעלה."
+    Stop-Install "הבדיקה העצמית נכשלה: $fail`n`nהכל הוחזר לקדמותו וה-Wi-Fi פתוח. החסימה לא הופעלה. הפרטים נשמרו בקובץ WifiGate-error.txt בשולחן העבודה."
 }
 Set-Progress 'מסיים...' 1.0
 try { $pfm.Close() } catch { }

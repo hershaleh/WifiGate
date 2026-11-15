@@ -47,7 +47,7 @@ function Test-General {
     # Ethernet / other adapters untouched: rules may only mention blocked (radio) adapters
     $targets = @(Get-BlockTargets)
     $okIds = @(); foreach ($tg in $targets) { $okIds += (Get-AdapterFilterIds $tg) }
-    $other = @(Get-BlockRules | Where-Object { $_.DisplayName -notlike '*Wireless*' } | Get-NetFirewallInterfaceFilter |
+    $other = @(Get-BlockRules | Where-Object { $_.DisplayName -notlike '*Wireless*' } | Where-Object { $_.DisplayName -like 'WifiGate*' } | Get-NetFirewallInterfaceFilter |
         ForEach-Object { @($_.InterfaceAlias) } | Where-Object { $okIds -notcontains [string]$_ })
     if ($other.Count -eq 0) { Add-Res 'PASS' 'כללי WifiGate אינם מתייחסים לאף מתאם שאינו אלחוטי (Ethernet לא נחסם).' } else { Add-Res 'FAIL' ('כלל של WifiGate מתייחס למתאם נוסף: ' + ($other -join ', ')) }
     Add-Res 'INFO' ('מתאמים חסומים: ' + (($targets | ForEach-Object { $_.Name }) -join ', '))
@@ -126,7 +126,7 @@ function Test-Traffic {
         if (-not $ip) { Add-Res 'SKIP' 'ה-Wi-Fi לא התחבר לרשת בטווח הזמן (אין רשת מוכרת?).'; return }
         $blocked = -not ((Test-TcpOnce '1.1.1.1' 443 6000) -or (Test-TcpOnce '8.8.8.8' 443 6000))
         # positive control: remove the rules for a few seconds and verify the Wi-Fi really has internet
-        Get-BlockRules | Remove-NetFirewallRule
+        Remove-BlockRules
         Start-Sleep -Seconds 2
         $control = (Test-TcpOnce '1.1.1.1' 443 8000) -or (Test-TcpOnce '8.8.8.8' 443 8000)
         Set-WifiBlock
