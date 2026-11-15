@@ -202,6 +202,16 @@ try {
     Check 'wizard: visible names accepted' (-not (Test-WizardPage 3))
     $wsum = Get-WizardSummary
     Check 'wizard: summary lists adapter and names' (($wsum -match 'Realtek USB') -and ($wsum -match 'x') -and ($wsum -match 'Bluetooth'))
+    Check 'wizard: second admin off needs nothing' (-not (Test-WizardPage 5))
+    $script:wz.TwoCard.Tag.Selected = $true
+    $script:wz.Adm2Pw1.Box.Text = 'short'
+    Check 'wizard: second admin short password refused' ([bool](Test-WizardPage 5))
+    $script:wz.Adm2Pw1.Box.Text = 'Abcdefg1!'; $script:wz.Adm2Pw2.Box.Text = 'Abcdefg1!'
+    Check 'wizard: same password for both admins refused' ([bool](Test-WizardPage 5))
+    $script:wz.Adm2Pw1.Box.Text = 'Second-9876'; $script:wz.Adm2Pw2.Box.Text = 'Second-9876'
+    Check 'wizard: second admin accepted' (-not (Test-WizardPage 5))
+    $wr2 = Get-WizardResult
+    Check 'wizard: result carries second admin' ($wr2.TwoAdmins -and $wr2.Password2 -eq 'Second-9876')
     $wizF.Dispose()
 
     # ---- tray (headless self-test) ----
@@ -223,6 +233,30 @@ try {
     $t = Invoke-Unlock 'ThirdPass789'
     Check 'throttle after 5 failures' ((-not $t.Ok) -and $t.Message -match 'ניסיונות') $t.Message
     Write-Json $script:ThrottleFile ([pscustomobject]@{ Fails = 0; Until = '' })
+
+    # ---- two admins ----
+    $authBak = Get-Content $script:AuthFile -Raw
+    $c2 = New-RecoveryCode
+    $au = Read-Json $script:AuthFile
+    $hh = [ordered]@{}; foreach ($pp in $au.PSObject.Properties) { $hh[$pp.Name] = $pp.Value }
+    $hh['Admin2'] = [pscustomobject]@{ Password = (New-SecretRecord 'SecondPass1'); Recovery = (New-SecretRecord (ConvertTo-NormalCode $c2)) }
+    Write-Json $script:AuthFile ([pscustomobject]$hh)
+    $SP = [string][char]1
+    Check 'two: mode detected' (Get-TwoAdmins)
+    Check 'two: first password alone refused' (-not (Invoke-Unlock 'ThirdPass789').Ok)
+    Check 'two: wrong second password refused' (-not (Invoke-Unlock ('ThirdPass789' + $SP + 'bad')).Ok)
+    Check 'two: swapped passwords refused' (-not (Invoke-Unlock ('SecondPass1' + $SP + 'ThirdPass789')).Ok)
+    Check 'two: unlock does not accept recovery codes' (-not (Invoke-Unlock ($code + $SP + $c2)).Ok)
+    Check 'two: both passwords unlock' (Invoke-Unlock ('ThirdPass789' + $SP + 'SecondPass1')).Ok
+    Check 'two: recovery with both codes' (Invoke-Recovery ($code + $SP + $c2)).Ok
+    Check 'two: recovery mixing password and code' (Invoke-Recovery ('ThirdPass789' + $SP + $c2)).Ok
+    Check 'two: change admin 2 password' (Invoke-ChangePassword ('ThirdPass789' + $SP + 'SecondPass1') 'SecondNew22' 2).Ok
+    Check 'two: new admin 2 password works' (Invoke-Unlock ('ThirdPass789' + $SP + 'SecondNew22')).Ok
+    Check 'two: old admin 2 password refused' (-not (Invoke-Unlock ('ThirdPass789' + $SP + 'SecondPass1')).Ok)
+    Check 'two: change admin 1 keeps admin 2 record' ((Invoke-ChangePassword ('ThirdPass789' + $SP + 'SecondNew22') 'FirstNew333' 1).Ok -and (Get-TwoAdmins) -and (Invoke-Unlock ('FirstNew333' + $SP + 'SecondNew22')).Ok)
+    Set-Content -Path $script:AuthFile -Value $authBak -Encoding UTF8
+    Write-Json $script:ThrottleFile ([pscustomobject]@{ Fails = 0; Until = '' })
+    Check 'two: single mode restored' ((-not (Get-TwoAdmins)) -and (Invoke-Unlock 'ThirdPass789').Ok)
 
     # installer shortcut helper (Hebrew folder + Hebrew name, hotkey, run-as-admin flag)
     $tk = $null; $te = $null
@@ -302,7 +336,10 @@ try {
     $script:wz.ModeCards[0].Tag.Selected = $false; $script:wz.ModeCards[1].Tag.Selected = $true
     Set-WizardPage 3 $true; Shot $wzf 'wiz-3-icons-hidden' $true
     Set-WizardPage 4 $true; Shot $wzf 'wiz-4-password' $true
-    Set-WizardPage 5 $true; Shot $wzf 'wiz-5-summary' $true
+    Set-WizardPage 5 $true; Shot $wzf 'wiz-5-two-admins' $true
+    $script:wz.TwoCard.Tag.Selected = $true; $script:wz.Adm2Panel.Visible = $true; $script:wz.TwoCard.Invalidate()
+    Shot $wzf 'wiz-5-two-admins-on' $true
+    Set-WizardPage 6 $true; Shot $wzf 'wiz-6-summary' $true
     Check 'wizard: last page button says install' ($script:wz.Next.Text -eq 'התקנה')
     $wzf.Close(); $wzf.Dispose()
     $pfm = New-ProgressForm

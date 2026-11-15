@@ -1,6 +1,6 @@
 ﻿# WifiGate - Wizard.ps1 : the visual installer (Hebrew, dark theme, animated).
 # Needs Ui.ps1 and Common.ps1 (Get-AdapterCategory) to be loaded first.
-# Pages: 0 adapter, 1 what to block, 2 access mode, 3 names / icon, 4 password, 5 summary.
+# Pages: 0 adapter, 1 what to block, 2 access mode, 3 names / icon, 4 password, 5 second admin (optional), 6 summary.
 
 # ---------- reusable selectable card ----------
 
@@ -151,7 +151,7 @@ function New-InstallWizard($Cands, $All) {
     $dots.Add_Paint({
         param($s, $e)
         $w = $script:wz; $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
-        $n = 6; $gap = 34; $cx0 = 300 + ($n - 1) * $gap / 2       # page 0 is the right-most dot
+        $n = 7; $gap = 30; $cx0 = 300 + ($n - 1) * $gap / 2       # page 0 is the right-most dot
         $line = New-Object System.Drawing.Pen($script:Theme.Border, [single]2)
         $g.DrawLine($line, [single]($cx0 - ($n - 1) * $gap), 15, [single]$cx0, 15)
         $done = New-Object System.Drawing.Pen($script:Theme.Accent, [single]2.5)
@@ -326,17 +326,34 @@ function New-InstallWizard($Cands, $All) {
     })
     $cont.Controls.Add($p4)
 
-    # ---- page 5: summary ----
-    $p5 = New-WizardPage 'סיכום' 'זה מה שייעשה. הנעילה תופעל רק אחרי בדיקה עצמית ואישור נוסף שלכם.'
+    # ---- page 5: second admin (optional) ----
+    $pa = New-WizardPage 'שני מנהלים' 'אפשר לדרוש שני אנשים לכל פתיחה: לכל מנהל סיסמה וקוד שחזור משלו.'
+    $wz.TwoCard = New-Card 2 84 520 84 'הפעל שני מנהלים' "פתיחה, שחזור ושינוי הגדרות דורשים את הסיסמה של שני המנהלים.`nמי שמקליד את הסיסמה הראשונה לא יכול לפתוח לבד." 'check' $false
+    $pa.Controls.Add($wz.TwoCard)
+    $pnl = New-Object System.Windows.Forms.Panel
+    $pnl.SetBounds(0, 184, 540, 270); $pnl.BackColor = $script:Theme.Bg; $pnl.Visible = $false
+    $pnl.Controls.Add((New-WizardText 'סיסמה של המנהל השני' 0 0 540 22 10 $script:Theme.Muted))
+    $wz.Adm2Pw1 = New-ThemedInput 0 24 540 $true
+    $pnl.Controls.Add($wz.Adm2Pw1.Panel)
+    $pnl.Controls.Add((New-WizardText 'הקלדה חוזרת לאימות' 0 90 540 22 10 $script:Theme.Muted))
+    $wz.Adm2Pw2 = New-ThemedInput 0 114 540 $true
+    $pnl.Controls.Add($wz.Adm2Pw2.Panel)
+    $pnl.Controls.Add((New-WizardText 'מומלץ שהמנהל השני יקליד את הסיסמה בעצמו. הוא יקבל גם קוד שחזור נפרד.' 0 172 540 24 9.5 $script:Theme.Muted))
+    $wz.Adm2Panel = $pnl; $pa.Controls.Add($pnl)
+    $wz.TwoCard.Tag.OnSelect = { param($c) $script:wz.Adm2Panel.Visible = [bool]$c.Tag.Selected }
+    $cont.Controls.Add($pa)
+
+    # ---- page 6: summary ----
+    $p6 = New-WizardPage 'סיכום' 'זה מה שייעשה. הנעילה תופעל רק אחרי בדיקה עצמית ואישור נוסף שלכם.'
     $sum = New-Object System.Windows.Forms.TextBox
     $sum.Multiline = $true; $sum.ReadOnly = $true; $sum.BorderStyle = 'None'; $sum.ScrollBars = 'Vertical'
     $sum.SetBounds(0, 84, 540, 384); $sum.Font = New-Object System.Drawing.Font('Segoe UI', 10)
     $sum.BackColor = $script:Theme.Card; $sum.ForeColor = $script:Theme.Text
-    $wz.Summary = $sum; $p5.Controls.Add($sum)
-    $cont.Controls.Add($p5)
-    $wz.Enter[5] = { $script:wz.Summary.Text = (Get-WizardSummary); $script:wz.Summary.Select(0, 0) }
+    $wz.Summary = $sum; $p6.Controls.Add($sum)
+    $cont.Controls.Add($p6)
+    $wz.Enter[6] = { $script:wz.Summary.Text = (Get-WizardSummary); $script:wz.Summary.Select(0, 0) }
 
-    $wz.Pages = @($p0, $p1, $p2, $p3, $p4, $p5)
+    $wz.Pages = @($p0, $p1, $p2, $p3, $p4, $pa, $p6)
     $p0.Visible = $true
 
     # footer
@@ -356,7 +373,7 @@ function New-InstallWizard($Cands, $All) {
         $m = Test-WizardPage $w.Index
         if ($m) { $w.Msg.Text = $m; Start-WizardShake; return }
         $w.Msg.Text = ''
-        if ($w.Index -ge 5) { $w.Form.DialogResult = 'OK'; return }
+        if ($w.Index -ge 6) { $w.Form.DialogResult = 'OK'; return }
         Set-WizardPage ($w.Index + 1)
     })
     $wz.Back.Add_Click({
@@ -408,7 +425,7 @@ function Start-WizardShake {
 function Set-WizardButtons {
     $w = $script:wz
     $w.Back.Visible = ($w.Index -gt 0)
-    if ($w.Index -ge 5) { $w.Next.Text = 'התקנה' } else { $w.Next.Text = 'הבא' }
+    if ($w.Index -ge 6) { $w.Next.Text = 'התקנה' } else { $w.Next.Text = 'הבא' }
 }
 
 function Set-WizardPage([int]$Index, [bool]$Instant = $false) {
@@ -452,6 +469,13 @@ function Test-WizardPage([int]$Index) {
             if ($w.Pw1.Box.Text.Length -lt 8) { return 'הסיסמה קצרה מדי (מינימום 8 תווים).' }
             if ($w.Pw1.Box.Text -ne $w.Pw2.Box.Text) { return 'הסיסמאות אינן זהות.' }
         }
+        5 {
+            if ($w.TwoCard.Tag.Selected) {
+                if ($w.Adm2Pw1.Box.Text.Length -lt 8) { return 'הסיסמה של המנהל השני קצרה מדי (מינימום 8 תווים).' }
+                if ($w.Adm2Pw1.Box.Text -ne $w.Adm2Pw2.Box.Text) { return 'הסיסמאות של המנהל השני אינן זהות.' }
+                if ($w.Adm2Pw1.Box.Text -ceq $w.Pw1.Box.Text) { return 'שני המנהלים חייבים סיסמאות שונות.' }
+            }
+        }
     }
     return $null
 }
@@ -464,8 +488,9 @@ function Get-WizardResult {
     $hid = [bool]$w.ModeCards[1].Tag.Selected
     $r = @{
         Adapter = $w.Cands[$idx]; Categories = $cats; Hidden = $hid; Hotkeys = [bool]$w.HotCard.Tag.Selected
-        Password = $w.Pw1.Box.Text; Name = ''; OpenName = ''; LockName = ''; IconPath = ''
+        Password = $w.Pw1.Box.Text; TwoAdmins = [bool]$w.TwoCard.Tag.Selected; Password2 = ''; Name = ''; OpenName = ''; LockName = ''; IconPath = ''
     }
+    if ($r.TwoAdmins) { $r.Password2 = $w.Adm2Pw1.Box.Text }
     if ($hid) {
         $r.Name = $w.HidName.Box.Text.Trim()
         $k = 0; foreach ($c in $w.IconCards) { if ($c.Tag.Selected) { $k = $w.IconCards.IndexOf($c) } }
@@ -489,6 +514,7 @@ function Get-WizardSummary {
     } else {
         $t += 'גישה (מצב גלוי):' + $nl + "  • בשולחן העבודה: '" + $r.OpenName + "' ו-'" + $r.LockName + "'" + $nl + '  • בתפריט התחל: בדיקות ושחזור' + $nl
     }
+    if ($r.TwoAdmins) { $t += $nl + 'שני מנהלים: כל פתיחה, שחזור ושינוי הגדרות דורשים את הסיסמה של שניהם. כל מנהל מקבל קוד שחזור משלו.' + $nl }
     if ($r.Hotkeys) { $t += '  • קיצורי מקשים: Ctrl+Alt+P פתיחה, Ctrl+Alt+X נעילה' + $nl }
     $t += $nl + 'מה יותקן:' + $nl
     $t += '  • תוכנה ב-C:\Program Files\WifiGate ונתונים מוצפנים ב-C:\ProgramData\WifiGate (מנהלים ומערכת בלבד)' + $nl

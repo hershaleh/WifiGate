@@ -81,7 +81,17 @@ $pw = [string]$ch.Password
 
 # ---- 3. recovery code ----
 $code = New-RecoveryCode
-if (-not (Show-CodeDialog $code)) { Stop-Install 'ההתקנה בוטלה. לא בוצע שום שינוי.' }
+$two = [bool]$ch.TwoAdmins
+$code2 = ''
+$who1 = ''; if ($two) { $who1 = 'מנהל 1' }
+if (-not (Show-CodeDialog $code $who1)) { Stop-Install 'ההתקנה בוטלה. לא בוצע שום שינוי.' }
+if ($two) {
+    $code2 = New-RecoveryCode
+    if (-not (Show-CodeDialog $code2 'מנהל 2')) { Stop-Install 'ההתקנה בוטלה. לא בוצע שום שינוי.' }
+}
+# what the unlock / recovery paths receive (two admins: both parts joined by the separator)
+$secPw = $pw; $secCode = $code
+if ($two) { $secPw = $pw + [string][char]1 + [string]$ch.Password2; $secCode = $code + [string][char]1 + $code2 }
 
 $pfm = New-ProgressForm
 $pfm.Show(); [System.Windows.Forms.Application]::DoEvents()
@@ -96,11 +106,9 @@ if ($LASTEXITCODE -ne 0) { Invoke-Uninstall; Stop-Install 'לא הצלחתי ל�
 
 Set-Progress 'שומר הגדרות וסיסמה...' 0.25
 Write-Json $script:ConfigFile ([pscustomobject]@{ AdapterGuid = $WifiGuid; BlockCategories = @($ch.Categories); AccessMode = $(if ($ch.Hidden) { 'hidden' } else { 'visible' }) })
-Write-Json $script:AuthFile ([pscustomobject]@{
-    Version = 1
-    Password = (New-SecretRecord $pw)
-    Recovery = (New-SecretRecord (ConvertTo-NormalCode $code))
-})
+$authObj = [ordered]@{ Version = 1; Password = (New-SecretRecord $pw); Recovery = (New-SecretRecord (ConvertTo-NormalCode $code)) }
+if ($two) { $authObj['Admin2'] = [pscustomobject]@{ Password = (New-SecretRecord ([string]$ch.Password2)); Recovery = (New-SecretRecord (ConvertTo-NormalCode $code2)) } }
+Write-Json $script:AuthFile ([pscustomobject]$authObj)
 Set-State 'unlocked'
 Write-Json $script:SnapshotFile (@(Get-NetAdapter | Where-Object { $_.InterfaceGuid -ne $WifiGuid } |
     ForEach-Object { [pscustomobject]@{ Name = $_.Name; Guid = $_.InterfaceGuid; Status = [string]$_.Status } }))
@@ -154,14 +162,14 @@ try {
     if (Test-SecretRecord 'wrong-password-xyz' (Read-Json $script:AuthFile).Password) { throw 'אימות סיסמה שגוי התקבל.' }
 
     Set-Progress 'בדיקה עצמית: פתיחה בסיסמה...' 0.7
-    $r = Invoke-Unlock $pw                                              # exercise the real unlock path
+    $r = Invoke-Unlock $secPw                                              # exercise the real unlock path
     if (-not $r.Ok) { throw 'פתיחה בסיסמה נכשלה בבדיקה.' }
     if (@(Get-BlockRules).Count -ne 0) { throw 'הכללים לא הוסרו בפתיחה.' }
     if ((Get-WifiAdapter).Status -eq 'Disabled') { throw 'המתאם לא הופעל בפתיחה.' }
 
     Set-Progress 'בדיקה עצמית: שחזור בקוד...' 0.85
     Set-WifiBlock                                                       # lock again, then recover with the code
-    $r = Invoke-Recovery $code
+    $r = Invoke-Recovery $secCode
     if (-not $r.Ok) { throw 'שחזור בקוד נכשל בבדיקה.' }
     if (@(Get-BlockRules).Count -ne 0) { throw 'השחזור לא הסיר את הכללים.' }
     if ((Get-WifiAdapter).Status -eq 'Disabled') { throw 'השחזור לא הפעיל את המתאם.' }

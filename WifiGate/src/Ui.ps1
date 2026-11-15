@@ -217,20 +217,32 @@ function New-SecretDialogForm([string]$Prompt, [string]$Title = 'WifiGate') {
     return $f
 }
 
+# In two-admin mode this asks twice (admin 1, then admin 2) and returns "part1<SOH>part2". -Single asks once.
 function Read-SecretDialog {
-    param([string]$Prompt, [string]$Title = 'WifiGate')
-    $f = New-SecretDialogForm $Prompt $Title
+    param([string]$Prompt, [string]$Title = 'WifiGate', [switch]$Single)
+    $two = (-not $Single) -and (Get-TwoAdmins)
+    $p = $Prompt; if ($two) { $p = 'מנהל 1: ' + $Prompt }
+    $f = New-SecretDialogForm $p $Title
     $res = $f.ShowDialog()
     $val = $script:sd.Box.Text
     $f.Dispose()
-    if ([string]$res -eq 'OK') { return $val }
-    return $null
+    if ([string]$res -ne 'OK') { return $null }
+    if (-not $two) { return $val }
+    return (Get-FullSecret $val)
+}
+
+# Completes a first password (typed into a form field) with the second admin's, when two-admin mode is on. $null = cancelled.
+function Get-FullSecret([string]$First) {
+    if (-not (Get-TwoAdmins)) { return $First }
+    $s2 = Read-SecretDialog 'מנהל 2: הזינו את הסיסמה (או קוד השחזור) של המנהל השני.' 'WifiGate' -Single
+    if ($null -eq $s2) { return $null }
+    return ($First + [string][char]1 + $s2)
 }
 
 # Shows the one-time recovery code in a clear, large form. Returns $true when the user confirmed writing it down.
-function New-CodeDialogForm([string]$Code) {
+function New-CodeDialogForm([string]$Code, [string]$Who = '') {
     $f = New-ThemedForm 'WifiGate - קוד שחזור' 440 340
-    $f.Controls.Add((New-ThemedLabel 'קוד השחזור שלכם' 20 18 400 34 17 $script:Theme.Text $true))
+    $f.Controls.Add((New-ThemedLabel $(if ($Who) { 'קוד השחזור של ' + $Who } else { 'קוד השחזור שלכם' }) 20 18 400 34 17 $script:Theme.Text $true))
     $card = New-Object System.Windows.Forms.Panel
     $card.SetBounds(30, 66, 380, 84); $card.BackColor = $script:Theme.Card
     Set-Rounded $card 14
@@ -248,8 +260,8 @@ function New-CodeDialogForm([string]$Code) {
     return $f
 }
 
-function Show-CodeDialog([string]$Code) {
-    $f = New-CodeDialogForm $Code
+function Show-CodeDialog([string]$Code, [string]$Who = '') {
+    $f = New-CodeDialogForm $Code $Who
     $res = $f.ShowDialog(); $f.Dispose()
     return ([string]$res -eq 'OK')
 }

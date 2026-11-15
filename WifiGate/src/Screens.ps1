@@ -74,6 +74,8 @@ function Invoke-MainUnlock {
     $ui = $script:ui
     $pw = $ui.Input.Box.Text
     if (-not $pw) { Set-MainMessage 'הקלידו את הסיסמה.' 'bad'; return }
+    $pw = Get-FullSecret $pw                      # two-admin mode: asks for the second admin's password
+    if ($null -eq $pw) { return }
     $ui.Busy = $true; $ui.BtnUnlock.Enabled = $false
     Set-MainMessage 'בודק...' 'muted'; $ui.Form.Refresh()
     $ui.Input.Box.Clear()
@@ -298,17 +300,24 @@ function New-MainForm {
 function New-ChangePasswordForm {
     $cp = @{}
     $script:cp = $cp
-    $f = New-ThemedForm 'WifiGate - שינוי סיסמה' 380 404
+    $two = Get-TwoAdmins
+    $o = 0; if ($two) { $o = 52 }
+    $f = New-ThemedForm 'WifiGate - שינוי סיסמה' 380 (404 + $o)
     $cp.Form = $f
     $f.Controls.Add((New-ThemedLabel 'שינוי סיסמה' 20 14 340 34 16 $script:Theme.Text $true))
-    $cur = Add-Field $f 'הסיסמה הנוכחית (או קוד השחזור)' 58 $true
-    $new = Add-Field $f 'סיסמה חדשה (לפחות 8 תווים)' 128 $true
-    $rep = Add-Field $f 'אימות הסיסמה החדשה' 198 $true
+    $cp.Chips = $null
+    if ($two) {
+        $f.Controls.Add((New-ThemedLabel 'של איזה מנהל משנים את הסיסמה' 20 50 340 20 9.5 $script:Theme.Muted))
+        $cp.Chips = New-ChipRow 20 72 340 34 @('מנהל 1', 'מנהל 2'); $f.Controls.Add($cp.Chips)
+    }
+    $cur = Add-Field $f 'הסיסמה הנוכחית שלכם (או קוד השחזור)' (58 + $o) $true
+    $new = Add-Field $f 'סיסמה חדשה (לפחות 8 תווים)' (128 + $o) $true
+    $rep = Add-Field $f 'אימות הסיסמה החדשה' (198 + $o) $true
     $cp.Cur = $cur.Box; $cp.New = $new.Box; $cp.Rep = $rep.Box
-    $cp.Msg = New-ThemedLabel '' 20 268 340 24 9.5 $script:Theme.Danger
+    $cp.Msg = New-ThemedLabel '' 20 (268 + $o) 340 24 9.5 $script:Theme.Danger
     $f.Controls.Add($cp.Msg)
-    $cp.Save = New-ThemedButton 'שמור' 195 306 165 46 'primary'
-    $cn = New-ThemedButton 'ביטול' 20 306 165 46 'ghost'
+    $cp.Save = New-ThemedButton 'שמור' 195 (306 + $o) 165 46 'primary'
+    $cn = New-ThemedButton 'ביטול' 20 (306 + $o) 165 46 'ghost'
     $cn.DialogResult = 'Cancel'
     $f.Controls.Add($cp.Save); $f.Controls.Add($cn)
     $f.AcceptButton = $cp.Save; $f.CancelButton = $cn
@@ -317,7 +326,10 @@ function New-ChangePasswordForm {
         if ($cp.New.Text -ne $cp.Rep.Text) { $cp.Msg.Text = 'הסיסמאות החדשות אינן זהות.'; return }
         if ($cp.New.Text.Length -lt 8) { $cp.Msg.Text = 'הסיסמה החדשה קצרה מדי (מינימום 8 תווים).'; return }
         $cp.Save.Enabled = $false; $cp.Msg.Text = ''; $cp.Form.Refresh()
-        try { $r = Invoke-ChangePassword $cp.Cur.Text $cp.New.Text } catch { Write-Log "change password error: $($_.Exception.Message)"; $r = New-Result $false 'אירעה שגיאה.' }
+        $full = Get-FullSecret $cp.Cur.Text
+        if ($null -eq $full) { $cp.Save.Enabled = $true; return }
+        $adm = 1; if ($cp.Chips) { $adm = [int]$cp.Chips.Tag.Index + 1 }
+        try { $r = Invoke-ChangePassword $full $cp.New.Text $adm } catch { Write-Log "change password error: $($_.Exception.Message)"; $r = New-Result $false 'אירעה שגיאה.' }
         $cp.Save.Enabled = $true
         if ($r.Ok) { $cp.Form.DialogResult = 'OK' } else { $cp.Msg.Text = $r.Message; $cp.Cur.Clear(); $cp.Cur.Focus() }
     })
@@ -414,10 +426,12 @@ function New-AutoLockForm {
 
     $al.Save.Add_Click({
         $a = $script:al
+        $full = Get-FullSecret $a.Pw.Text
+        if ($null -eq $full) { return }
         $a.Save.Enabled = $false; $a.Msg.Text = ''; $a.Form.Refresh()
         try {
             $mins = [int]($a.Def.Hour * 60 + $a.Def.Min)
-            $r = Invoke-SaveAutoLockSettings $a.Pw.Text $a.DefEnable.Checked $mins $a.DayEnable.Checked ('{0:00}:{1:00}' -f $a.Day.Hour, $a.Day.Min)
+            $r = Invoke-SaveAutoLockSettings $full $a.DefEnable.Checked $mins $a.DayEnable.Checked ('{0:00}:{1:00}' -f $a.Day.Hour, $a.Day.Min)
         } catch { Write-Log "auto-lock settings error: $($_.Exception.Message)"; $r = New-Result $false 'אירעה שגיאה.' }
         $a.Save.Enabled = $true
         if ($r.Ok) { $a.Form.DialogResult = 'OK' } else { $a.Msg.Text = $r.Message; $a.Pw.Clear(); $a.Pw.Focus() }
@@ -492,9 +506,11 @@ function New-SettingsForm {
     } catch { }
     $sd.Save.Add_Click({
         $x = $script:setf
+        $full = Get-FullSecret $x.Pw.Text
+        if ($null -eq $full) { return }
         $x.Save.Enabled = $false; $x.Msg.Text = ''; $x.Form.Refresh()
         $sel = @($x.Cats.Keys | Where-Object { $x.Cats[$_].Checked })
-        try { $r = Invoke-SaveSettings $x.Pw.Text $sel $x.Tray.Checked $x.Reminder.Checked $x.Anim.Checked }
+        try { $r = Invoke-SaveSettings $full $sel $x.Tray.Checked $x.Reminder.Checked $x.Anim.Checked }
         catch { Write-Log "settings error: $($_.Exception.Message)"; $r = New-Result $false 'אירעה שגיאה.' }
         $x.Save.Enabled = $true
         if ($r.Ok) { $x.Form.DialogResult = 'OK' } else { $x.Msg.Text = $r.Message; $x.Pw.Clear(); $x.Pw.Focus() }

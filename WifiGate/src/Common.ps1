@@ -404,27 +404,44 @@ function Register-AuthFailure {
 }
 
 # Checks the password (and, if allowed, the recovery code) with brute-force throttling.
+# ---- two-admin mode: auth.json has an "Admin2" record (own password + recovery code). A secret is then "part1<SOH>part2". ----
+function Get-TwoAdmins { return ($null -ne (Get-Prop (Read-Json $script:AuthFile) 'Admin2' $null)) }
+
+function Test-OneAdmin([string]$S, $Pw, $Rec, [bool]$AllowRecovery) {
+    $ok = (Test-SecretRecord $S $Pw)
+    if (-not $ok -and $AllowRecovery -and $Rec) { $ok = (Test-SecretRecord (ConvertTo-NormalCode $S) $Rec) }
+    return $ok
+}
+
+# Single admin: the secret is the password (or recovery code). Two admins: both parts must match their own admin.
+function Test-SecretSet([string]$Secret, $Auth, [bool]$AllowRecovery) {
+    $a2 = Get-Prop $Auth 'Admin2' $null
+    if ($null -eq $a2) { return (Test-OneAdmin $Secret $Auth.Password $Auth.Recovery $AllowRecovery) }
+    $parts = $Secret.Split([char]1)
+    if ($parts.Count -ne 2) { return $false }
+    $r1 = Test-OneAdmin $parts[0] $Auth.Password $Auth.Recovery $AllowRecovery
+    $r2 = Test-OneAdmin $parts[1] $a2.Password $a2.Recovery $AllowRecovery
+    return ($r1 -and $r2)
+}
+
 function Test-AuthSecret([string]$Secret, [bool]$AllowRecovery = $false) {
     $w = Get-ThrottleWait
     if ($w -gt 0) { return (New-Result $false "יותר מדי ניסיונות. נסו שוב בעוד $w שניות.") }
     $auth = Read-Json $script:AuthFile
     $ok = $false
-    if ($auth) {
-        $ok = Test-SecretRecord $Secret $auth.Password
-        if (-not $ok -and $AllowRecovery) { $ok = Test-SecretRecord (ConvertTo-NormalCode $Secret) $auth.Recovery }
-    }
+    if ($auth) { $ok = Test-SecretSet $Secret $auth $AllowRecovery }
     if (-not $ok) {
         Register-AuthFailure
+        if (Get-TwoAdmins) {
+            if ($AllowRecovery) { return (New-Result $false 'אחת הסיסמאות או קודי השחזור שגויים.') }
+            return (New-Result $false 'אחת הסיסמאות שגויה.')
+        }
         if ($AllowRecovery) { return (New-Result $false 'הסיסמה או קוד השחזור שגויים.') }
         return (New-Result $false 'הסיסמה שגויה.')
     }
     Write-Json $script:ThrottleFile ([pscustomobject]@{ Fails = 0; Until = '' })
     return (New-Result $true '')
 }
-
-# ---------- unlock / recovery ----------
-
-# AutoLockMinutes > 0: the Wi-Fi locks itself again after that many minutes (enforced by the Tick task).
 function Invoke-Unlock([string]$Password, [int]$AutoLockMinutes = 0) {
     $a = Test-AuthSecret $Password $false
     if (-not $a.Ok) { return $a }
@@ -447,13 +464,19 @@ function Set-AutoLock([int]$Minutes) {
     Write-Log "auto-lock set: $Minutes min"
 }
 
-function Invoke-ChangePassword([string]$Current, [string]$New) {
+# $Admin (1 or 2) says whose password is replaced; it only matters in two-admin mode.
+function Invoke-ChangePassword([string]$Current, [string]$New, [int]$Admin = 1) {
     if ($New.Length -lt 8) { return (New-Result $false 'הסיסמה החדשה קצרה מדי (מינימום 8 תווים).') }
     $a = Test-AuthSecret $Current $true
     if (-not $a.Ok) { return $a }
     $auth = Read-Json $script:AuthFile
-    Write-Json $script:AuthFile ([pscustomobject]@{ Version = 1; Password = (New-SecretRecord $New); Recovery = $auth.Recovery })
-    Write-Log 'password changed'
+    $h = [ordered]@{}
+    foreach ($p in $auth.PSObject.Properties) { $h[$p.Name] = $p.Value }
+    $a2 = Get-Prop $auth 'Admin2' $null
+    if ($Admin -eq 2 -and $null -ne $a2) { $h['Admin2'] = [pscustomobject]@{ Password = (New-SecretRecord $New); Recovery = $a2.Recovery } }
+    else { $h['Password'] = (New-SecretRecord $New) }
+    Write-Json $script:AuthFile ([pscustomobject]$h)
+    Write-Log "password changed (admin $Admin)"
     return (New-Result $true 'הסיסמה שונתה.')
 }
 
@@ -523,8 +546,7 @@ function Test-LockDue {
 function Invoke-Recovery([string]$Secret) {
     $auth = Read-Json $script:AuthFile
     if (-not $auth) { return (New-Result $false 'לא נמצאו נתוני אימות.') }
-    $ok = (Test-SecretRecord $Secret $auth.Password) -or (Test-SecretRecord (ConvertTo-NormalCode $Secret) $auth.Recovery)
-    if (-not $ok) { Write-Log 'recovery failed'; return (New-Result $false 'הסיסמה או קוד השחזור שגויים.') }
+    if (-not (Test-SecretSet $Secret $auth $true)) { Write-Log 'recovery failed'; return (New-Result $false 'הסיסמה או קוד השחזור שגויים (בשני מנהלים: של שניהם).') }
     Clear-WifiBlock
     Set-State 'unlocked'
     Write-Log 'recovery used'
