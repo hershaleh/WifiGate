@@ -1,0 +1,150 @@
+﻿PASS syntax Install.ps1
+PASS syntax Common.ps1
+PASS syntax Console.ps1
+PASS syntax Enforce.ps1
+PASS syntax Home.ps1
+PASS syntax Lock.ps1
+PASS syntax Recovery.ps1
+PASS syntax Screens.ps1
+PASS syntax Tests.ps1
+PASS syntax Tray.ps1
+PASS syntax Ui.ps1
+PASS syntax Unlock-UI.ps1
+PASS syntax Wizard.ps1
+PASS unlock wrong password refused
+PASS unlock ok
+PASS state unlocked with auto-lock
+PASS lock not due yet
+PASS timer removed
+PASS timer set
+PASS lock due after auto-lock time passed
+PASS daily lock save needs correct password
+PASS daily lock bad time rejected
+PASS daily lock saved
+PASS daily lock due (unlocked before lock time)
+PASS daily lock not due (unlocked after lock time)
+PASS daily lock disabled -> not due
+PASS old state file without AutoLockAt works
+PASS legacy state (no AutoLockAt) not due
+PASS default auto-lock: too short refused
+PASS default auto-lock: wrong password refused
+PASS default auto-lock: saved (5h)
+PASS default minutes read back
+PASS unlock applies the default (about 5h)
+PASS explicit minutes override the default
+PASS default disabled -> unlock without timer
+PASS no timer when default disabled
+PASS radio: Wi-Fi adapter blocked
+PASS radio: USB Wi-Fi dongle blocked
+PASS radio: Wi-Fi Direct blocked
+PASS radio: Bluetooth PAN blocked
+PASS radio: USB tethering (RNDIS) blocked
+PASS radio: iPhone tethering blocked
+PASS radio: mobile broadband blocked
+PASS radio: wired Ethernet NOT blocked
+PASS radio: 2.5GbE NOT blocked
+PASS radio: USB Ethernet NOT blocked
+PASS radio: Hyper-V NOT blocked
+PASS radio: VPN NOT blocked
+PASS radio: AnyConnect NOT blocked
+PASS category: Wi-Fi
+PASS category: Bluetooth
+PASS category: cellular
+PASS category: tether (RNDIS)
+PASS category: tether (iPhone)
+PASS category: Wi-Fi Direct
+PASS category: Ethernet is none
+PASS category: Hyper-V is none
+INFO rules failed for Ethernet 4: The specified interface was not found on the system.
+
+PASS block rules created on a real adapter
+PASS block rules valid (2 adapter + 2 wireless rules)
+PASS four core rules exist
+PASS wireless rules filter interface type Wireless
+PASS missing rule is detected
+PASS Update-BlockRules repairs a deleted rule
+PASS Update-BlockRules is idempotent (still 4 core rules)
+PASS disabled list round-trips
+PASS Clear-WifiBlock removes rules and clears list
+FAIL usage: unlock and lock each logged once (no duplicates) lines=3
+PASS usage: lock after power-off is stamped at LastSeen, not now
+PASS stats: 7 days returned
+PASS stats: midnight-crossing session split (2h + 1h)
+PASS stats: total 5.5h, 2 sessions, longest 180 min
+PASS settings: wrong password refused
+PASS settings: saved
+FAIL settings: values stored 
+PASS settings: no categories -> only chosen adapter is a target
+PASS settings: categories stored, unknown ones dropped
+PASS settings: all categories restored
+PASS legacy BlockAllRadios=false -> no categories
+PASS legacy config without categories -> all
+PASS wizard: page 0 needs a selected adapter (default selected)
+PASS wizard: password too short refused
+PASS wizard: password mismatch refused
+PASS wizard: matching password accepted
+PASS wizard: strength meter orders passwords
+PASS wizard: result adapter
+PASS wizard: result categories
+PASS wizard: result hidden mode + name
+PASS icons: tools specs point to existing files
+PASS icons: system specs point to existing files
+PASS icons: web specs point to existing files
+PASS icons: office specs point to existing files
+PASS icons: folders specs point to existing files
+PASS icons: variety specs point to existing files
+INFO icon categories: tools=15 system=16 web=8 office=0 folders=14 variety=120
+PASS icons: tools offers at least 3
+PASS icons: system offers at least 3
+PASS icons: folders offers at least 5
+PASS icons: variety offers at least 30
+PASS app icon file exists and loads
+PASS wizard: default icon selected
+PASS wizard: result has an icon spec
+PASS wizard: forbidden file-name characters refused
+PASS wizard: empty visible name refused
+PASS wizard: visible name accepted
+PASS wizard: visible default name is WifiGate
+PASS wizard: programmatic name does not count as an edit
+PASS wizard: typed name counts as an edit
+PASS wizard: summary lists adapter and names
+PASS wizard: second admin off needs nothing
+PASS wizard: second admin short password refused
+PASS wizard: same password for both admins refused
+PASS wizard: second admin accepted
+PASS wizard: result carries second admin
+PASS tray self-test runs
+PASS change: too short refused
+PASS change: wrong current refused
+PASS change: ok with current password
+PASS new password unlocks
+PASS old password no longer works
+PASS change: recovery code accepted as current
+PASS recovery code still valid after change
+PASS third password works
+PASS throttle after 5 failures
+PASS two: mode detected
+PASS two: first password alone refused
+PASS two: wrong second password refused
+PASS two: swapped passwords refused
+PASS two: unlock does not accept recovery codes
+PASS two: both passwords unlock
+PASS two: recovery with both codes
+PASS two: recovery mixing password and code
+PASS two: change admin 2 password
+PASS two: new admin 2 password works
+PASS two: old admin 2 password refused
+PASS two: change admin 1 keeps admin 2 record
+PASS two: single mode restored
+PASS shortcut created in Hebrew folder
+PASS shortcut has run-as-admin flag
+PASS hotkey Ctrl+Alt+P stored
+PASS no temp lnk left behind
+PASS console prints filler lines
+PASS console shows no options or purpose
+PASS console filler contains English and Chinese
+PASS main window can be minimized
+PASS wizard: last page button says install
+EXCEPTION: Cannot overwrite variable HOME because it is read-only or constant. @ At D:\a\WifiGate\WifiGate\WifiGate\src\Screens.ps1:653 char:5
++     $script:home = $h
++     ~~~~~~~~~~~~~~~~~
