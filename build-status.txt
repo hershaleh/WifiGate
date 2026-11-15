@@ -1,0 +1,8 @@
+sha=cb5ec93e9f51a0a35d2183caa907a3f2c852d05a
+job=success
+exe_bytes=155136
+exe_sha256=26DA5A14161C8D6E2658563841D710E073589D9DFFEBCD1B61041491FF61AF26
+--- publish ---
+view exit=0
+upload exit=0 
+edit exit=0 https://github.com/hershaleh/WifiGate/releases/tag/latest
